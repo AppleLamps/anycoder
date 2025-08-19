@@ -3,6 +3,15 @@ import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import mammoth from 'mammoth';
 import Tesseract from 'tesseract.js';
 
+declare global {
+    interface Window {
+        hljs: {
+            highlightElement: (element: Element) => void;
+            highlightAll: () => void;
+        };
+    }
+}
+
 (pdfjsLib as any).GlobalWorkerOptions.workerSrc = workerSrc;
 
 // AnyCoder TypeScript - AI Code Generator
@@ -42,7 +51,10 @@ class AnyCoder {
     // Multi-file current map (if applicable)
     private currentFiles: Record<string, string> | null = null;
     // Pyodide runtime
-    private pyodide: any = null;
+    private pyodide: {
+        runPythonAsync: (code: string) => Promise<any>;
+        globals: any;
+    } | null = null;
     private pyodideReady = false;
 
     constructor() {
@@ -680,7 +692,7 @@ Please read our contributing guidelines before submitting PRs.
         try {
             if (isPdf) {
                 const arrayBuffer = await file.arrayBuffer();
-                const task = (pdfjsLib as any).getDocument({ data: arrayBuffer });
+                const task = pdfjsLib.getDocument({ data: arrayBuffer });
                 const pdf = await task.promise;
                 let fullText = '';
                 for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
@@ -694,7 +706,7 @@ Please read our contributing guidelines before submitting PRs.
 
             if (isDocx) {
                 const arrayBuffer = await file.arrayBuffer();
-                const result = await (mammoth as any).extractRawText({ arrayBuffer });
+                const result = await mammoth.extractRawText({ arrayBuffer });
                 return ((result && result.value) || '').trim();
             }
 
@@ -703,7 +715,7 @@ Please read our contributing guidelines before submitting PRs.
                 const objectUrl = URL.createObjectURL(file);
                 try {
                     const result = await Tesseract.recognize(objectUrl, 'eng');
-                    const text = (result && result.data && result.data.text) ? result.data.text : '';
+                    const text = result?.data?.text || '';
                     return text.trim();
                 } finally {
                     URL.revokeObjectURL(objectUrl);
@@ -755,8 +767,8 @@ Please read our contributing guidelines before submitting PRs.
             codeElement.className = `hljs language-${language}`;
             
             // Apply syntax highlighting
-            if ((window as any).hljs) {
-                (window as any).hljs.highlightElement(codeElement);
+            if (window.hljs) {
+                window.hljs.highlightElement(codeElement);
             }
         }
     }
@@ -769,10 +781,10 @@ Please read our contributing guidelines before submitting PRs.
         if (fileViews) {
             fileViews.innerHTML = `<pre><code id="generated-code" class="hljs language-${language}"></code></pre>`;
             const codeElement = document.getElementById('generated-code');
-            if (codeElement) {
+                if (codeElement) {
                 codeElement.textContent = code;
-                if ((window as any).hljs) {
-                    (window as any).hljs.highlightElement(codeElement);
+                if (window.hljs) {
+                    window.hljs.highlightElement(codeElement);
                 }
             }
         }
@@ -813,8 +825,8 @@ Please read our contributing guidelines before submitting PRs.
         });
 
         // highlight
-        if ((window as any).hljs) {
-            fileViews.querySelectorAll('code').forEach(codeEl => (window as any).hljs.highlightElement(codeEl));
+        if (window.hljs) {
+            fileViews.querySelectorAll('code').forEach(codeEl => window.hljs.highlightElement(codeEl));
         }
     }
 
@@ -857,8 +869,8 @@ Please read our contributing guidelines before submitting PRs.
             codeElement.innerHTML = escapedContent + '<span class="streaming-cursor">█</span>';
             codeElement.className = `hljs language-${language}`;
             
-            // Apply syntax highlighting with a small delay to avoid too frequent updates
-            if ((window as any).hljs) {
+        // Apply syntax highlighting with a small delay to avoid too frequent updates
+        if (window.hljs) {
                 // Debounce highlighting updates
                 clearTimeout(this.highlightTimeout);
                 this.highlightTimeout = setTimeout(() => {
@@ -869,7 +881,7 @@ Please read our contributing guidelines before submitting PRs.
                         cursorElement.remove();
                     }
                     
-                    (window as any).hljs.highlightElement(codeElement);
+            window.hljs.highlightElement(codeElement);
                     
                     // Add cursor back
                     if (cursor) {
@@ -1232,8 +1244,8 @@ Please read our contributing guidelines before submitting PRs.
 
     private updateCodeHighlighting(): void {
         const codeElement = document.getElementById('generated-code');
-        if (codeElement && (window as any).hljs) {
-            (window as any).hljs.highlightElement(codeElement);
+        if (codeElement && window.hljs) {
+            window.hljs.highlightElement(codeElement);
         }
     }
 
