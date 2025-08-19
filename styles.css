@@ -399,6 +399,71 @@ body {
     background: none !important;
 }
 
+/* Multi-file tabs */
+.file-tabs {
+    display: none;
+    gap: 0.5rem;
+    padding: 0.75rem 1rem 0; /* top padding aligns with code */
+    background: var(--background);
+    border-bottom: 1px solid var(--border);
+}
+
+.file-tab {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 0.375rem 0.75rem;
+    border-radius: 6px 6px 0 0;
+    cursor: pointer;
+    font-size: 0.75rem;
+}
+
+.file-tab.active {
+    border-bottom-color: transparent;
+    background: var(--background);
+    color: var(--primary-color);
+}
+
+.file-views {
+    height: 100%;
+}
+
+.file-view { display: none; height: 100%; }
+.file-view.active { display: block; }
+
+/* Output console */
+.output-container {
+    height: 100%;
+    background: var(--background);
+    padding: 1rem;
+}
+
+.output-console {
+    background: #000;
+    color: #e5e7eb;
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    padding: 1rem;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    height: 100%;
+    overflow: auto;
+    white-space: pre-wrap;
+}
+
+/* Streaming cursor animation */
+@keyframes blink {
+    0%, 50% { opacity: 1; }
+    51%, 100% { opacity: 0.3; }
+}
+
+.streaming-cursor {
+    color: var(--accent);
+    font-weight: bold;
+    animation: blink 1.2s infinite;
+    display: inline;
+}
+
 /* Preview Panel */
 .preview-container {
     height: 100%;
@@ -555,6 +620,7 @@ body {
 
 .btn-loader {
     animation: spin 1s linear infinite;
+    display: none;
 }
 
 /* Code Highlighting Overrides */
@@ -562,6 +628,15 @@ body {
     background: var(--background) !important;
     color: var(--text) !important;
 }
+
+.muted-small {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    margin-top: 0.25rem;
+    display: block;
+}
+
+.link-primary { color: var(--primary-color); }
 
 /* Focus States */
 button:focus-visible,

@@ -1,3 +1,10 @@
+import * as pdfjsLib from 'pdfjs-dist';
+import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+import mammoth from 'mammoth';
+import Tesseract from 'tesseract.js';
+
+(pdfjsLib as any).GlobalWorkerOptions.workerSrc = workerSrc;
+
 // AnyCoder TypeScript - AI Code Generator
 // Main application logic and UI interactions
 
@@ -20,7 +27,7 @@ interface HistoryItem {
 }
 
 interface AIResponse {
-    code: string;
+    code: string | Record<string, string>; // string for single-file, map for multi-file
     language: string;
     explanation?: string;
 }
@@ -28,11 +35,21 @@ interface AIResponse {
 class AnyCoder {
     private history: HistoryItem[] = [];
     private currentTheme = 'github-dark';
+    private highlightTimeout?: ReturnType<typeof setTimeout>;
+    private previewTimeout?: ReturnType<typeof setTimeout>;
+    // New iterative editing context
+    private currentCodeContext: string = '';
+    // Multi-file current map (if applicable)
+    private currentFiles: Record<string, string> | null = null;
+    // Pyodide runtime
+    private pyodide: any = null;
+    private pyodideReady = false;
 
     constructor() {
         this.initializeEventListeners();
         this.loadTheme();
         this.loadHistory();
+        this.initPyodide();
     }
 
     private initializeEventListeners(): void {
@@ -64,13 +81,17 @@ class AnyCoder {
             });
         });
 
-        // Copy button
+    // Copy button
         const copyBtn = document.getElementById('copy-btn') as HTMLButtonElement;
         copyBtn?.addEventListener('click', () => this.copyCode());
 
         // Download button
         const downloadBtn = document.getElementById('download-btn') as HTMLButtonElement;
         downloadBtn?.addEventListener('click', () => this.downloadCode());
+
+    // Run button
+    const runBtn = document.getElementById('run-btn') as HTMLButtonElement;
+    runBtn?.addEventListener('click', () => this.runCode());
 
         // Theme selector
         const themeSelect = document.getElementById('theme-select') as HTMLSelectElement;
@@ -133,9 +154,25 @@ class AnyCoder {
 
         try {
             const response = await this.generateCode(config);
-            this.displayCode(response.code, config.language);
-            this.addToHistory(config.prompt, response.code, config.language);
-            this.updatePreview(response.code, config.language);
+            // Handle single vs multi-file
+            if (typeof response.code === 'string') {
+                this.currentFiles = null;
+                this.currentCodeContext = response.code;
+                this.displaySingleFile(response.code, config.language);
+                this.addToHistory(config.prompt, response.code, config.language);
+                this.updatePreview(response.code, config.language);
+            } else {
+                this.currentFiles = response.code;
+                // set context from main file or concatenation
+                this.currentCodeContext = this.concatFiles(response.code);
+                this.displayMultiFile(response.code);
+                this.updatePreviewFromFiles(response.code);
+                // Save primary file into history for now
+                const primary = this.pickPrimaryFile(response.code) || '';
+                this.addToHistory(config.prompt, primary, config.language);
+            }
+            // Switch button text to Update Code
+            this.setHasContext(true);
             this.showToast('Code generated successfully!', 'success');
             this.switchTab('code');
         } catch (error) {
@@ -196,13 +233,25 @@ class AnyCoder {
             }
         }
 
-        // Use Hugging Face inference router with OpenAI-compatible API
-        return await this.callHuggingFaceRouter(enhancedPrompt, config.language, config.model, config.apiKey);
+        // Use OpenRouter with OpenAI-compatible API
+        const ai = await this.callOpenRouter(enhancedPrompt, config.language, config.model, config.apiKey);
+        // Parse potential multi-file output
+        if (typeof ai.code === 'string') {
+            console.log('🔍 Checking for multi-file content in response:', ai.code.substring(0, 500) + '...');
+            const parsed = this.parseMultiFile(ai.code);
+            if (parsed) {
+                console.log('✅ Multi-file detected! Files:', Object.keys(parsed));
+                return { code: parsed, language: config.language };
+            } else {
+                console.log('❌ No multi-file pattern detected, treating as single file');
+            }
+        }
+        return ai;
     }
 
     private buildEnhancedPrompt(config: GenerationConfig): string {
         const languagePrompts: Record<string, string> = {
-            'html': 'Create modern, responsive HTML with CSS and JavaScript. Use best practices for accessibility and performance.',
+            'html': 'Create modern, responsive web applications with separate HTML, CSS, and JavaScript files for better organization.',
             'typescript': 'Write clean, type-safe TypeScript code with proper interfaces and modern features.',
             'javascript': 'Create modern JavaScript using ES6+ features with proper error handling.',
             'python': 'Write clean, idiomatic Python code following PEP 8 guidelines.',
@@ -212,41 +261,111 @@ class AnyCoder {
         };
 
         const systemPrompt = languagePrompts[config.language] || `Generate clean, well-documented ${config.language} code.`;
-        
-        return `${systemPrompt}\n\nUser request: ${config.prompt}\n\nPlease provide only the code without explanations unless specifically requested. Use modern best practices and ensure the code is production-ready.`;
+
+        // If we have context, ask for modification with explicit format for multi-file
+        if (this.currentCodeContext && this.currentCodeContext.trim()) {
+            return `You are an expert developer. The user wants to modify the following code block based on their request. Provide only the complete, updated code block as a response. If the project has multiple files, return them delimited as shown below.\n\n<EXISTING_CODE>\n${this.currentCodeContext}\n</EXISTING_CODE>\n\nUser's modification request: ${config.prompt}\n\nIMPORTANT: When returning multiple files, you MUST use this EXACT format with no explanations or markdown:\n\n// FILENAME: index.html\n<!DOCTYPE html>\n<html>\n<head>...</head>\n<body>...</body>\n</html>\n\n// FILENAME: style.css\nbody {\n  margin: 0;\n  padding: 20px;\n}\n\n// FILENAME: script.js\nconsole.log('Hello World');`;
+        }
+
+        // Enhanced multi-file generation prompt
+        const multiFileInstructions = config.language === 'html' ? `
+
+IMPORTANT MULTI-FILE REQUIREMENTS:
+- For web applications, you MUST create separate files: HTML, CSS, and JavaScript
+- NEVER put CSS in <style> tags or JavaScript in <script> tags within HTML
+- Always separate concerns: structure (HTML), styling (CSS), behavior (JS)
+- Use this EXACT format with no markdown backticks, no explanations:
+
+// FILENAME: index.html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>App Title</title>
+</head>
+<body>
+    <div id="app">
+        <!-- Your HTML structure here -->
+    </div>
+</body>
+</html>
+
+// FILENAME: style.css
+/* Your CSS styles here */
+body {
+    font-family: Arial, sans-serif;
+    margin: 0;
+    padding: 20px;
+}
+
+// FILENAME: script.js
+// Your JavaScript code here
+document.addEventListener('DOMContentLoaded', function() {
+    console.log('App loaded');
+});
+
+DO NOT use single-file HTML with embedded styles or scripts!` : `
+
+If multiple files are needed, use this format:
+// FILENAME: filename1.ext
+content here
+
+// FILENAME: filename2.ext  
+content here`;
+
+        return `${systemPrompt}\n\nUser request: ${config.prompt}${multiFileInstructions}`;
     }
 
-    private async callHuggingFaceRouter(prompt: string, language: string, model: string, apiKey?: string): Promise<AIResponse> {
-        // Use Hugging Face's OpenAI-compatible router
+    private async callOpenRouter(prompt: string, language: string, model: string, apiKey?: string): Promise<AIResponse> {
+        console.log('🚀 Starting OpenRouter API call...');
+        console.log('📡 Using proxy endpoint: /api-proxy/api/v1/chat/completions');
+        console.log('🔑 API Key provided:', !!apiKey);
+        console.log('🤖 Model:', model);
+        
         const headers: Record<string, string> = {
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
         };
 
         // Add authorization if API key is provided
         if (apiKey && apiKey.trim()) {
             headers['Authorization'] = `Bearer ${apiKey.trim()}`;
+            console.log('✅ Authorization header added');
+        } else {
+            console.log('❌ No API key provided');
         }
 
-        const response = await fetch('https://router.huggingface.co/v1/chat/completions', {
-            method: 'POST',
-            headers,
-            body: JSON.stringify({
-                model: model,
-                messages: [
-                    {
-                        role: 'system',
-                        content: `You are an expert ${language} developer. Generate clean, modern, production-ready code. Only return the code without explanations unless specifically requested.`
-                    },
-                    {
-                        role: 'user',
-                        content: prompt
-                    }
-                ],
-                max_tokens: 4000,
-                temperature: 0.7,
-                stream: true
-            })
-        });
+        let response: Response;
+        try {
+            console.log('📤 Making fetch request...');
+            // Use the local proxy endpoint
+            response = await fetch('/api-proxy/api/v1/chat/completions', {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({
+                    model: model,
+                    messages: [
+                        {
+                            role: 'system',
+                            content: `You are an expert ${language} developer. When creating web applications, ALWAYS separate HTML, CSS, and JavaScript into individual files. Use the exact format "// FILENAME: filename.ext" to delimit files. Never embed CSS in <style> tags or JavaScript in <script> tags within HTML. Generate clean, modern, production-ready code. Only return the code without explanations.`
+                        },
+                        {
+                            role: 'user',
+                            content: prompt
+                        }
+                    ],
+                    max_tokens: 4000,
+                    temperature: 0.7,
+                    stream: true
+                })
+            });
+
+            console.log('📥 Response received. Status:', response.status);
+        } catch (fetchError) {
+            console.error('🚫 Fetch error:', fetchError);
+            console.warn('Falling back to mock response due to fetch error');
+            return this.getMockResponse(prompt, language);
+        }
 
         if (!response.ok) {
             // Try to get error details
@@ -260,15 +379,15 @@ class AnyCoder {
 
             // If it's a 401/403, suggest getting an API key
             if (response.status === 401 || response.status === 403) {
-                throw new Error('Authentication failed. Please add your Hugging Face token in API Settings.');
+                throw new Error('Authentication failed. Please add your OpenRouter API key in API Settings.');
             }
 
             // For other errors, fall back to mock response
-            console.warn('HF API call failed:', errorMessage);
+            console.warn('OpenRouter API call failed:', errorMessage);
             return this.getMockResponse(prompt, language);
         }
 
-        // Handle streaming response
+        // Handle streaming response with real-time display
         const reader = response.body?.getReader();
         if (!reader) {
             throw new Error('Failed to get response reader');
@@ -276,6 +395,9 @@ class AnyCoder {
 
         const decoder = new TextDecoder();
         let content = '';
+        
+        // Initialize the code display for streaming
+        this.initializeStreamingDisplay(language);
 
         try {
             while (true) {
@@ -297,6 +419,8 @@ class AnyCoder {
                             const deltaContent = parsed.choices?.[0]?.delta?.content;
                             if (deltaContent) {
                                 content += deltaContent;
+                                // Update display in real-time
+                                this.updateStreamingDisplay(content, language);
                             }
                         } catch (e) {
                             // Ignore JSON parsing errors for malformed chunks
@@ -308,8 +432,8 @@ class AnyCoder {
             reader.releaseLock();
         }
 
-        const code = this.extractCodeFromResponse(content, language);
-        return { code, language };
+    const code = this.extractCodeFromResponse(content, language);
+    return { code, language };
     }
 
     private getMockResponse(prompt: string, language: string): AIResponse {
@@ -546,18 +670,77 @@ Please read our contributing guidelines before submitting PRs.
     }
 
     private async readFileContent(file: File): Promise<string> {
-        return new Promise((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = () => resolve(reader.result as string);
-            reader.onerror = () => reject(new Error('Failed to read file'));
-            reader.readAsText(file);
-        });
+        const name = file.name.toLowerCase();
+        const type = (file.type || '').toLowerCase();
+
+        const isPdf = name.endsWith('.pdf') || type === 'application/pdf';
+        const isDocx = name.endsWith('.docx') || type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+        const isImage = name.endsWith('.jpg') || name.endsWith('.jpeg') || name.endsWith('.png') || type.startsWith('image/');
+
+        try {
+            if (isPdf) {
+                const arrayBuffer = await file.arrayBuffer();
+                const task = (pdfjsLib as any).getDocument({ data: arrayBuffer });
+                const pdf = await task.promise;
+                let fullText = '';
+                for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+                    const page = await pdf.getPage(pageNum);
+                    const content = await page.getTextContent();
+                    const strings = content.items.map((item: any) => item.str).filter(Boolean);
+                    fullText += strings.join(' ') + '\n\n';
+                }
+                return fullText.trim();
+            }
+
+            if (isDocx) {
+                const arrayBuffer = await file.arrayBuffer();
+                const result = await (mammoth as any).extractRawText({ arrayBuffer });
+                return ((result && result.value) || '').trim();
+            }
+
+            if (isImage) {
+                this.showToast('Processing image with OCR...', 'success');
+                const objectUrl = URL.createObjectURL(file);
+                try {
+                    const result = await Tesseract.recognize(objectUrl, 'eng');
+                    const text = (result && result.data && result.data.text) ? result.data.text : '';
+                    return text.trim();
+                } finally {
+                    URL.revokeObjectURL(objectUrl);
+                }
+            }
+
+            // Fallback: treat as plain text
+            return await new Promise<string>((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result as string);
+                reader.onerror = () => reject(new Error('Failed to read file'));
+                reader.readAsText(file);
+            });
+        } catch (err) {
+            console.error('Failed to process file:', err);
+            this.showToast('Failed to process file', 'error');
+            // Best-effort fallback to text
+            try {
+                return await new Promise<string>((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onload = () => resolve(reader.result as string);
+                    reader.onerror = () => reject(new Error('Failed to read file'));
+                    reader.readAsText(file);
+                });
+            } catch {
+                return '';
+            }
+        }
     }
 
     private async fetchWebsiteContent(url: string): Promise<string> {
-        // Note: Due to CORS restrictions, this would typically need a backend proxy
-        // For demo purposes, we'll return a mock response
-        return `Website content from ${url} (CORS proxy would be needed for real implementation)`;
+        const response = await fetch(`/api/scrape?url=${encodeURIComponent(url)}`);
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`Failed to fetch website content via proxy: ${errorText}`);
+        }
+        return await response.text();
     }
 
     private async performWebSearch(query: string, language: string): Promise<string> {
@@ -574,6 +757,139 @@ Please read our contributing guidelines before submitting PRs.
             // Apply syntax highlighting
             if ((window as any).hljs) {
                 (window as any).hljs.highlightElement(codeElement);
+            }
+        }
+    }
+
+    private displaySingleFile(code: string, language: string): void {
+        // hide file tabs
+        const fileTabs = document.getElementById('file-tabs');
+        const fileViews = document.getElementById('file-views');
+        if (fileTabs) fileTabs.style.display = 'none';
+        if (fileViews) {
+            fileViews.innerHTML = `<pre><code id="generated-code" class="hljs language-${language}"></code></pre>`;
+            const codeElement = document.getElementById('generated-code');
+            if (codeElement) {
+                codeElement.textContent = code;
+                if ((window as any).hljs) {
+                    (window as any).hljs.highlightElement(codeElement);
+                }
+            }
+        }
+    }
+
+    private displayMultiFile(files: Record<string, string>): void {
+        const fileTabs = document.getElementById('file-tabs');
+        const fileViews = document.getElementById('file-views');
+        if (!fileTabs || !fileViews) return;
+
+        // Build tabs and views
+        const filenames = Object.keys(files);
+        fileTabs.innerHTML = filenames.map((name, idx) => `<button class="file-tab ${idx===0?'active':''}" data-file="${this.escapeHtml(name)}">${this.escapeHtml(name)}</button>`).join('');
+        fileTabs.style.display = 'flex';
+
+        fileViews.innerHTML = filenames.map((name, idx) => {
+            const language = this.getLanguageFromFilename(name);
+            return `
+            <div class="file-view ${idx===0?'active':''}" data-file="${this.escapeHtml(name)}">
+                <pre><code class="hljs language-${language}">${this.escapeHtml(files[name])}</code></pre>
+            </div>
+        `;
+        }).join('');
+
+        // attach handlers
+        fileTabs.querySelectorAll('.file-tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                const fname = (tab as HTMLElement).dataset.file;
+                if (!fname) return;
+                // activate tab
+                fileTabs.querySelectorAll('.file-tab').forEach(t => t.classList.remove('active'));
+                tab.classList.add('active');
+                // activate view
+                fileViews.querySelectorAll('.file-view').forEach(view => {
+                    view.classList.toggle('active', (view as HTMLElement).dataset.file === fname);
+                });
+            });
+        });
+
+        // highlight
+        if ((window as any).hljs) {
+            fileViews.querySelectorAll('code').forEach(codeEl => (window as any).hljs.highlightElement(codeEl));
+        }
+    }
+
+    private getLanguageFromFilename(filename: string): string {
+        const ext = filename.toLowerCase().split('.').pop();
+        const extMap: Record<string, string> = {
+            'html': 'html',
+            'htm': 'html', 
+            'css': 'css',
+            'js': 'javascript',
+            'mjs': 'javascript',
+            'jsx': 'javascript',
+            'ts': 'typescript',
+            'tsx': 'typescript',
+            'py': 'python',
+            'json': 'json',
+            'md': 'markdown',
+            'txt': 'plaintext'
+        };
+        return extMap[ext || ''] || 'plaintext';
+    }
+
+    private initializeStreamingDisplay(language: string): void {
+        const codeElement = document.getElementById('generated-code');
+        if (codeElement) {
+            // Clear existing content and show streaming started
+            codeElement.innerHTML = '<span class="streaming-cursor">█</span>';
+            codeElement.className = `hljs language-${language}`;
+            
+            // Switch to code tab to show streaming
+            this.switchTab('code');
+        }
+    }
+
+    private updateStreamingDisplay(content: string, language: string): void {
+        const codeElement = document.getElementById('generated-code');
+        if (codeElement) {
+            // Escape HTML content and add streaming cursor at the end
+            const escapedContent = this.escapeHtml(content);
+            codeElement.innerHTML = escapedContent + '<span class="streaming-cursor">█</span>';
+            codeElement.className = `hljs language-${language}`;
+            
+            // Apply syntax highlighting with a small delay to avoid too frequent updates
+            if ((window as any).hljs) {
+                // Debounce highlighting updates
+                clearTimeout(this.highlightTimeout);
+                this.highlightTimeout = setTimeout(() => {
+                    // Temporarily remove cursor, highlight, then add it back
+                    const cursorElement = codeElement.querySelector('.streaming-cursor');
+                    const cursor = cursorElement?.outerHTML || '';
+                    if (cursorElement) {
+                        cursorElement.remove();
+                    }
+                    
+                    (window as any).hljs.highlightElement(codeElement);
+                    
+                    // Add cursor back
+                    if (cursor) {
+                        codeElement.innerHTML += cursor;
+                    }
+                }, 200);
+            }
+            
+            // Auto-scroll to bottom if content is long
+            codeElement.scrollTop = codeElement.scrollHeight;
+            
+            // For HTML content, update live preview during streaming (debounced)
+            if (language === 'html' && content.includes('</html>')) {
+                clearTimeout(this.previewTimeout);
+                this.previewTimeout = setTimeout(() => {
+                    const extractedCode = this.extractCodeFromResponse(content, language);
+                    if (extractedCode.trim()) {
+                        this.updatePreview(extractedCode, language);
+                    }
+                }, 1000); // Update preview 1 second after HTML looks complete
             }
         }
     }
@@ -598,6 +914,111 @@ Please read our contributing guidelines before submitting PRs.
             previewFrame.style.display = 'none';
             previewPlaceholder.style.display = 'flex';
         }
+    }
+
+    private updatePreviewFromFiles(files: Record<string, string>): void {
+        const indexHtml = files['index.html'];
+        if (indexHtml) {
+            // Inject CSS and JS into HTML for proper preview
+            const enhancedHtml = this.injectAssetsIntoHtml(indexHtml, files);
+            this.updatePreview(enhancedHtml, 'html');
+        } else {
+            // attempt to build a basic HTML that links assets
+            const htmlCandidate = Object.keys(files).find(f => f.toLowerCase().endsWith('.html'));
+            if (htmlCandidate) {
+                const enhancedHtml = this.injectAssetsIntoHtml(files[htmlCandidate], files);
+                this.updatePreview(enhancedHtml, 'html');
+            }
+        }
+    }
+
+    private injectAssetsIntoHtml(html: string, files: Record<string, string>): string {
+        let enhancedHtml = html;
+        
+        // Find CSS files and inject them as <style> tags
+        const cssFiles = Object.keys(files).filter(f => f.toLowerCase().endsWith('.css'));
+        if (cssFiles.length > 0) {
+            const cssContent = cssFiles.map(f => files[f]).join('\n\n');
+            const styleTag = `<style>\n${cssContent}\n</style>`;
+            
+            // Try to inject before </head>, fallback to beginning of <body>
+            if (enhancedHtml.includes('</head>')) {
+                enhancedHtml = enhancedHtml.replace('</head>', `${styleTag}\n</head>`);
+            } else if (enhancedHtml.includes('<body>')) {
+                enhancedHtml = enhancedHtml.replace('<body>', `<body>\n${styleTag}`);
+            } else {
+                enhancedHtml = styleTag + '\n' + enhancedHtml;
+            }
+        }
+
+        // Find JS files and inject them as <script> tags
+        const jsFiles = Object.keys(files).filter(f => f.toLowerCase().endsWith('.js'));
+        if (jsFiles.length > 0) {
+            const jsContent = jsFiles.map(f => files[f]).join('\n\n');
+            const scriptTag = `<script>\n${jsContent}\n</script>`;
+            
+            // Try to inject before </body>, fallback to end
+            if (enhancedHtml.includes('</body>')) {
+                enhancedHtml = enhancedHtml.replace('</body>', `${scriptTag}\n</body>`);
+            } else {
+                enhancedHtml = enhancedHtml + '\n' + scriptTag;
+            }
+        }
+
+        return enhancedHtml;
+    }
+
+    // ---------- Multi-file helpers ----------
+    private parseMultiFile(raw: string): Record<string, string> | null {
+        console.log('🔍 Parsing multi-file content. Raw length:', raw.length);
+        console.log('📄 First 200 chars:', raw.substring(0, 200));
+        
+        const lines = raw.split(/\r?\n/);
+        const files: Record<string, string> = {};
+        let current: string | null = null;
+        let buffer: string[] = [];
+
+        const flush = () => {
+            if (current !== null) {
+                // More conservative trimming - only remove leading/trailing empty lines
+                const content = buffer.join('\n');
+                const trimmed = content.replace(/^\n+/, '').replace(/\n+$/, '');
+                files[current] = trimmed;
+                console.log(`📝 Found file: ${current} (${trimmed.length} chars)`);
+            }
+            current = null;
+            buffer = [];
+        };
+
+        for (const line of lines) {
+            const m = line.match(/^\s*\/\/\s*FILENAME:\s*(.+)$/i);
+            if (m) {
+                flush();
+                current = m[1].trim();
+                console.log(`🏷️ New file detected: ${current}`);
+            } else {
+                buffer.push(line);
+            }
+        }
+        flush();
+
+        const count = Object.keys(files).length;
+        console.log(`📊 Total files found: ${count}`, Object.keys(files));
+        return count > 1 ? files : null;
+    }
+
+    private concatFiles(files: Record<string, string>): string {
+        return Object.entries(files).map(([n, c]) => `// FILENAME: ${n}\n${c}`).join('\n\n');
+    }
+
+    private pickPrimaryFile(files: Record<string, string>): string | null {
+        if (files['index.html']) return files['index.html'];
+        const html = Object.keys(files).find(f => f.toLowerCase().endsWith('.html'));
+        if (html) return files[html];
+        const js = Object.keys(files).find(f => f.toLowerCase().endsWith('.js'));
+        if (js) return files[js];
+        const first = Object.keys(files)[0];
+        return first ? files[first] : null;
     }
 
     private addToHistory(prompt: string, code: string, language: string): void {
@@ -701,8 +1122,13 @@ Please read our contributing guidelines before submitting PRs.
         }
         if (websiteUrlEl) websiteUrlEl.value = '';
 
-        // Clear generated code
-        this.displayCode('// Your generated code will appear here...', 'javascript');
+    // Reset state
+    this.currentCodeContext = '';
+    this.currentFiles = null;
+    this.setHasContext(false);
+
+    // Clear generated code
+    this.displaySingleFile('// Your generated code will appear here...', 'javascript');
         
         // Clear preview
         const previewFrame = document.getElementById('preview-frame') as HTMLIFrameElement;
@@ -713,7 +1139,11 @@ Please read our contributing guidelines before submitting PRs.
             previewPlaceholder.style.display = 'flex';
         }
 
-        this.showToast('Cleared successfully', 'success');
+    // Clear output console
+    const output = document.getElementById('output-console');
+    if (output) output.textContent = '';
+
+    this.showToast('Cleared successfully', 'success');
     }
 
     private async copyCode(): Promise<void> {
@@ -728,10 +1158,35 @@ Please read our contributing guidelines before submitting PRs.
         }
     }
 
-    private downloadCode(): void {
+    private async downloadCode(): Promise<void> {
         const codeElement = document.getElementById('generated-code');
         const languageEl = document.getElementById('language') as HTMLSelectElement;
         
+        if (this.currentFiles) {
+            // zip download
+            try {
+                const JSZip = await import('jszip');
+                const zip = new JSZip.default();
+                for (const [name, content] of Object.entries(this.currentFiles)) {
+                    zip.file(name, content);
+                }
+                const blob = await zip.generateAsync({ type: 'blob' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'project.zip';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                this.showToast('Downloaded project.zip', 'success');
+                return;
+            } catch (e) {
+                console.error('Zip failed', e);
+                this.showToast('Failed to create zip', 'error');
+            }
+        }
+
         if (codeElement && languageEl) {
             const code = codeElement.textContent || '';
             const language = languageEl.value;
@@ -812,6 +1267,15 @@ Please read our contributing guidelines before submitting PRs.
         }
     }
 
+    // Modify generate button label depending on context
+    private setHasContext(hasContext: boolean) {
+        const generateBtn = document.getElementById('generate-btn') as HTMLButtonElement;
+        const btnText = generateBtn?.querySelector('.btn-text') as HTMLElement;
+        if (btnText) {
+            btnText.textContent = hasContext ? 'Update Code' : 'Generate';
+        }
+    }
+
     private handleFileUpload(event: Event): void {
         const target = event.target as HTMLInputElement;
         const file = target.files?.[0];
@@ -865,8 +1329,16 @@ Please read our contributing guidelines before submitting PRs.
 
         if (generateBtn && btnText && btnLoader) {
             generateBtn.disabled = isGenerating;
-            btnText.style.display = isGenerating ? 'none' : 'inline';
-            btnLoader.style.display = isGenerating ? 'inline' : 'none';
+            if (isGenerating) {
+                btnText.textContent = 'Generating...';
+                btnText.style.display = 'inline';
+                btnLoader.style.display = 'inline';
+            } else {
+                // preserve context-aware label
+                btnText.textContent = this.currentCodeContext ? 'Update Code' : 'Generate';
+                btnText.style.display = 'inline';
+                btnLoader.style.display = 'none';
+            }
         }
     }
 
@@ -896,10 +1368,156 @@ Please read our contributing guidelines before submitting PRs.
             minute: '2-digit'
         }).format(date);
     }
+
+    // ---------- Pyodide and runners ----------
+    private async initPyodide() {
+        try {
+            const mod = await import('pyodide');
+            const loadPyodide = (mod as any).loadPyodide || (mod as any).default;
+            if (!loadPyodide) throw new Error('Pyodide load function missing');
+            this.pyodide = await loadPyodide({ indexURL: 'https://cdn.jsdelivr.net/pyodide/v0.26.0/full/' });
+            this.pyodideReady = true;
+            this.showToast('Pyodide ready for Python execution', 'success');
+        } catch (e) {
+            console.warn('Pyodide init failed', e);
+        }
+    }
+
+    private appendOutput(msg: string, type: 'log' | 'error' = 'log') {
+        const out = document.getElementById('output-console');
+        if (!out) return;
+        const line = document.createElement('div');
+        line.textContent = msg;
+        line.style.color = type === 'error' ? '#fda4af' : '#e5e7eb';
+        out.appendChild(line);
+        out.scrollTop = out.scrollHeight;
+    }
+
+    private clearOutput() {
+        const out = document.getElementById('output-console');
+        if (out) out.textContent = '';
+    }
+
+    private async runCode() {
+        this.clearOutput();
+        const langEl = document.getElementById('language') as HTMLSelectElement;
+        const language = langEl?.value || 'javascript';
+
+        if (this.currentFiles) {
+            if (this.currentFiles['index.html']) {
+                this.updatePreviewFromFiles(this.currentFiles);
+                this.switchTab('preview');
+                return;
+            }
+            const jsName = Object.keys(this.currentFiles).find(n => n.toLowerCase().endsWith('.js'));
+            if (jsName) {
+                await this.runJavascript(this.currentFiles[jsName]);
+                this.switchTab('output');
+                return;
+            }
+        }
+
+        const codeEl = document.getElementById('generated-code');
+        const code = codeEl?.textContent || '';
+        if (language === 'html') {
+            this.updatePreview(code, 'html');
+            this.switchTab('preview');
+            return;
+        }
+        if (language === 'javascript' || language === 'typescript') {
+            await this.runJavascript(code);
+            this.switchTab('output');
+            return;
+        }
+        if (language === 'python') {
+            await this.runPython(code);
+            this.switchTab('output');
+            return;
+        }
+        this.appendOutput('Run not supported for this language');
+    }
+
+    private async runJavascript(code: string) {
+        const iframe = document.createElement('iframe');
+        iframe.setAttribute('sandbox', 'allow-scripts');
+        iframe.style.display = 'none';
+        document.body.appendChild(iframe);
+        try {
+            const script = `
+                (function(){
+                    const _log = console.log;
+                    const _err = console.error;
+                    const q = [];
+                    console.log = function(...args){ q.push({t:'log', v: args.map(String).join(' ')}); _log.apply(console, args); };
+                    console.error = function(...args){ q.push({t:'error', v: args.map(String).join(' ')}); _err.apply(console, args); };
+                    try {
+                        ${code}
+                    } catch(e) {
+                        console.error(String(e));
+                    }
+                    window.parent.postMessage({ type: 'anycoder-console', data: q }, '*');
+                })();
+            `;
+            iframe.contentDocument?.open();
+            iframe.contentDocument?.write(`<script>${script}<\/script>`);
+            iframe.contentDocument?.close();
+
+            const handler = (ev: MessageEvent) => {
+                if (ev.data && ev.data.type === 'anycoder-console') {
+                    const q = ev.data.data as Array<{t:string, v:string}>;
+                    q.forEach(item => this.appendOutput(item.v, item.t==='error'?'error':'log'));
+                    window.removeEventListener('message', handler);
+                    document.body.removeChild(iframe);
+                }
+            };
+            window.addEventListener('message', handler);
+        } catch (e: any) {
+            this.appendOutput(String(e), 'error');
+            document.body.removeChild(iframe);
+        }
+    }
+
+    private async runPython(code: string) {
+        if (!this.pyodideReady) {
+            this.appendOutput('Initializing Python runtime, please wait...');
+            try { await this.initPyodide(); } catch {}
+        }
+        if (!this.pyodide) {
+            this.appendOutput('Python runtime not available', 'error');
+            return;
+        }
+        try {
+            const py = this.pyodide;
+            const wrapped = `
+import sys
+from io import StringIO
+_stdout = sys.stdout
+_stderr = sys.stderr
+sys.stdout = StringIO()
+sys.stderr = StringIO()
+err_msg = None
+try:
+${code.split('\n').map(l=> '    '+l).join('\n')}
+except Exception as e:
+    err_msg = str(e)
+out = sys.stdout.getvalue()
+err = sys.stderr.getvalue()
+sys.stdout = _stdout
+sys.stderr = _stderr
+out, err, err_msg
+`;
+            const result = await py.runPythonAsync(wrapped);
+            const [out, err, err_msg] = result as [string, string, string | null];
+            if (out) this.appendOutput(out);
+            if (err) this.appendOutput(err, 'error');
+            if (err_msg) this.appendOutput(err_msg, 'error');
+        } catch (e: any) {
+            this.appendOutput(String(e), 'error');
+        }
+    }
 }
 
 // Initialize the application when DOM is loaded
 document.addEventListener('DOMContentLoaded', () => {
     new AnyCoder();
 });
-
