@@ -7,6 +7,29 @@ export default defineConfig({
       mammoth: 'mammoth/mammoth.browser.js',
     },
   },
+  build: {
+    // Enable code splitting for better caching
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'pdf': ['pdfjs-dist'],
+          'ocr': ['tesseract.js'],
+          'python': ['pyodide'],
+          'vendor': ['highlight.js', 'jszip', 'mammoth']
+        }
+      }
+    },
+    // Optimize chunk size
+    chunkSizeWarningLimit: 1000,
+    // Enable minification
+    minify: 'terser',
+    terserOptions: {
+      compress: {
+        drop_console: true,
+        drop_debugger: true
+      }
+    }
+  },
   server: {
     proxy: {
       // Proxy requests from /api-proxy to OpenRouter
@@ -20,4 +43,9 @@ export default defineConfig({
       },
     },
   },
+  // Optimize dependencies
+  optimizeDeps: {
+    include: ['highlight.js', 'mammoth', 'jszip'],
+    exclude: ['pyodide'] // Load on demand
+  }
 });

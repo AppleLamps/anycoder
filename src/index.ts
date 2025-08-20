@@ -56,12 +56,61 @@ class AnyCoder {
         globals: any;
     } | null = null;
     private pyodideReady = false;
+    private cleanupHandlers: Array<() => void> = [];
+    private blobUrls: string[] = [];
 
     constructor() {
         this.initializeEventListeners();
         this.loadTheme();
         this.loadHistory();
         this.initPyodide();
+    }
+
+    private validateUrl(url: string): boolean {
+        try {
+            const parsed = new URL(url);
+            return ['http:', 'https:'].includes(parsed.protocol);
+        } catch {
+            return false;
+        }
+    }
+
+    private sanitizeFilename(filename: string): string {
+        // Remove path traversal attempts and invalid characters
+        return filename
+            .replace(/[^a-zA-Z0-9._-]/g, '_')
+            .replace(/\.{2,}/g, '_')
+            .substring(0, 255);
+    }
+
+    private validatePrompt(prompt: string): string {
+        // Limit prompt length and remove potential injection attempts
+        const MAX_PROMPT_LENGTH = 10000;
+        return prompt
+            .substring(0, MAX_PROMPT_LENGTH)
+            .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, ''); // Remove control characters
+    }
+
+    public destroy(): void {
+        // Clean up all event listeners
+        this.cleanupHandlers.forEach(cleanup => cleanup());
+        this.cleanupHandlers = [];
+
+        // Clear timeouts
+        if (this.highlightTimeout) clearTimeout(this.highlightTimeout);
+        if (this.previewTimeout) clearTimeout(this.previewTimeout);
+
+        // Revoke any tracked blob URLs
+        if (this.blobUrls && this.blobUrls.length > 0) {
+            this.blobUrls.forEach(url => URL.revokeObjectURL(url));
+            this.blobUrls = [];
+        }
+
+        // Revoke any blob URLs currently set on the preview iframe
+        const previewFrame = document.getElementById('preview-frame') as HTMLIFrameElement;
+        if (previewFrame?.src?.startsWith('blob:')) {
+            URL.revokeObjectURL(previewFrame.src);
+        }
     }
 
     private initializeEventListeners(): void {
@@ -156,12 +205,26 @@ class AnyCoder {
 
     private async handleGenerate(): Promise<void> {
         const config = this.getGenerationConfig();
-        
+
+        // Validate and sanitize inputs
+        config.prompt = this.validatePrompt(config.prompt);
+
         if (!config.prompt.trim()) {
             this.showToast('Please enter a prompt', 'error');
             return;
         }
 
+        if (config.prompt.length < 3) {
+            this.showToast('Prompt too short - please provide more detail', 'error');
+            return;
+        }
+
+        if (config.websiteUrl && !this.validateUrl(config.websiteUrl)) {
+            this.showToast('Invalid URL format', 'error');
+            return;
+        }
+
+        // Continue with existing logic...
         this.setGenerating(true);
 
         try {
@@ -262,143 +325,161 @@ class AnyCoder {
     }
 
     private buildEnhancedPrompt(config: GenerationConfig): string {
-        const languagePrompts: Record<string, string> = {
-            'html': 'Create modern, responsive web applications with separate HTML, CSS, and JavaScript files for better organization.',
-            'typescript': 'Write clean, type-safe TypeScript code with proper interfaces and modern features.',
-            'javascript': 'Create modern JavaScript using ES6+ features with proper error handling.',
-            'python': 'Write clean, idiomatic Python code following PEP 8 guidelines.',
-            'css': 'Create modern CSS with responsive design and proper vendor prefixes.',
-            'json': 'Generate valid JSON with proper structure and formatting.',
-            'markdown': 'Create well-formatted Markdown with proper syntax.'
-        };
-
-        const systemPrompt = languagePrompts[config.language] || `Generate clean, well-documented ${config.language} code.`;
-
-        // If we have context, ask for modification with explicit format for multi-file
+        // When updating existing code, include full context and keep the user prompt focused on the requested changes
         if (this.currentCodeContext && this.currentCodeContext.trim()) {
-            return `You are an expert developer. The user wants to modify the following code block based on their request. Provide only the complete, updated code block as a response. If the project has multiple files, return them delimited as shown below.\n\n<EXISTING_CODE>\n${this.currentCodeContext}\n</EXISTING_CODE>\n\nUser's modification request: ${config.prompt}\n\nIMPORTANT: When returning multiple files, you MUST use this EXACT format with no explanations or markdown:\n\n// FILENAME: index.html\n<!DOCTYPE html>\n<html>\n<head>...</head>\n<body>...</body>\n</html>\n\n// FILENAME: style.css\nbody {\n  margin: 0;\n  padding: 20px;\n}\n\n// FILENAME: script.js\nconsole.log('Hello World');`;
+            return `You are updating the following project based on the user's request. Return the complete updated files only.\n\n<EXISTING_CODE>\n${this.currentCodeContext}\n</EXISTING_CODE>\n\nUser request:\n${config.prompt}`;
         }
 
-        // Enhanced multi-file generation prompt
-        const multiFileInstructions = config.language === 'html' ? `
-
-IMPORTANT MULTI-FILE REQUIREMENTS:
-- For web applications, you MUST create separate files: HTML, CSS, and JavaScript
-- NEVER put CSS in <style> tags or JavaScript in <script> tags within HTML
-- Always separate concerns: structure (HTML), styling (CSS), behavior (JS)
-- Use this EXACT format with no markdown backticks, no explanations:
-
-// FILENAME: index.html
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>App Title</title>
-</head>
-<body>
-    <div id="app">
-        <!-- Your HTML structure here -->
-    </div>
-</body>
-</html>
-
-// FILENAME: style.css
-/* Your CSS styles here */
-body {
-    font-family: Arial, sans-serif;
-    margin: 0;
-    padding: 20px;
-}
-
-// FILENAME: script.js
-// Your JavaScript code here
-document.addEventListener('DOMContentLoaded', function() {
-    console.log('App loaded');
-});
-
-DO NOT use single-file HTML with embedded styles or scripts!` : `
-
-If multiple files are needed, use this format:
-// FILENAME: filename1.ext
-content here
-
-// FILENAME: filename2.ext  
-content here`;
-
-        return `${systemPrompt}\n\nUser request: ${config.prompt}${multiFileInstructions}`;
+        // For fresh generations, let the user prompt stand alone; formatting rules are enforced in the system prompt
+        return config.prompt;
     }
 
-    private async callOpenRouter(prompt: string, language: string, model: string, apiKey?: string): Promise<AIResponse> {
+    private buildSystemPrompt(language: string, hasContext: boolean): string {
+        return [
+            `You are an expert ${language} code generator inside AnyCoder.`,
+
+            'OUTPUT CONTRACT:',
+            '- Output ONLY code. No explanations, no markdown, no backticks.',
+            '- If multiple files are needed, delimit each file with a header line exactly:',
+            '- // FILENAME: filename.ext',
+            '- The header must be on its own line, then the file content starts on the next line.',
+            '- Do not include any text outside files.',
+
+            hasContext
+                ? '- You are UPDATING an existing project. Keep file names and structure unless the user explicitly asks to change them. Return the full updated files.'
+                : '- You are CREATING a new project. Use sensible defaults.',
+
+            'WEB PROJECTS:',
+            '- HTML, CSS, and JavaScript must be in separate files.',
+            '- Never embed CSS in <style> or JS in <script> within HTML.',
+            '- For web app tasks, you must output EXACTLY THREE FILES and NO OTHERS:',
+            '- // FILENAME: index.html',
+            '- // FILENAME: style.css',
+            '- // FILENAME: script.js',
+            '- Do NOT create more than one .html, more than one .css, or more than one .js file.',
+            '- Do NOT output additional files, images, assets, or directories unless explicitly requested to add more files (which is not allowed by default).',
+            '- Default names are fixed: index.html, style.css, script.js. Do not rename them unless the user explicitly requests a rename.',
+            hasContext
+                ? '- When updating, keep these three filenames and modify their contents only.'
+                : '- When creating new, produce only these three files.',
+            '- HTML must include <!DOCTYPE html>, <meta charset="UTF-8">, and a responsive <meta name="viewport">.',
+            '- HTML must include <!DOCTYPE html>, <meta charset="UTF-8">, and a responsive <meta name="viewport">.',
+
+            'NON-WEB PROJECTS:',
+            '- Default to a single file unless the user asks for multiple.',
+            '- Use sensible defaults: main.ts (TypeScript), index.js (JavaScript), main.py (Python), etc.',
+
+            'QUALITY:',
+            '- Produce modern, production-ready, readable code.',
+            '- Minimize dependencies. No remote network calls or external CDNs unless the user requests them.',
+            '- Add small, meaningful comments only when essential to understand the code.',
+
+            'PARSING COMPATIBILITY:',
+            '- The parser detects files via lines that match /^\\s*\/\/\\s*FILENAME:\\s*(.+)$/i.',
+            '- Do not include markdown fences or extra headers.'
+        ].filter(Boolean).join('\n');
+    }
+
+    private async callOpenRouter(
+        prompt: string,
+        language: string,
+        model: string,
+        apiKey?: string,
+        retries: number = 3
+    ): Promise<AIResponse> {
         console.log('🚀 Starting OpenRouter API call...');
         console.log('📡 Using proxy endpoint: /api-proxy/api/v1/chat/completions');
         console.log('🔑 API Key provided:', !!apiKey);
         console.log('🤖 Model:', model);
-        
+
         const headers: Record<string, string> = {
             'Content-Type': 'application/json',
         };
 
-        // Add authorization if API key is provided
         if (apiKey && apiKey.trim()) {
             headers['Authorization'] = `Bearer ${apiKey.trim()}`;
             console.log('✅ Authorization header added');
         } else {
-            console.log('❌ No API key provided');
+            console.log('⚠️ No API key provided - using free tier');
         }
 
-        let response: Response;
-        try {
-            console.log('📤 Making fetch request...');
-            // Use the local proxy endpoint
-            response = await fetch('/api-proxy/api/v1/chat/completions', {
-                method: 'POST',
-                headers,
-                body: JSON.stringify({
-                    model: model,
-                    messages: [
-                        {
-                            role: 'system',
-                            content: `You are an expert ${language} developer. When creating web applications, ALWAYS separate HTML, CSS, and JavaScript into individual files. Use the exact format "// FILENAME: filename.ext" to delimit files. Never embed CSS in <style> tags or JavaScript in <script> tags within HTML. Generate clean, modern, production-ready code. Only return the code without explanations.`
-                        },
-                        {
-                            role: 'user',
-                            content: prompt
-                        }
-                    ],
-                    max_tokens: 4000,
-                    temperature: 0.7,
-                    stream: true
-                })
-            });
+        let lastError: Error | null = null;
 
-            console.log('📥 Response received. Status:', response.status);
-        } catch (fetchError) {
-            console.error('🚫 Fetch error:', fetchError);
-            console.warn('Falling back to mock response due to fetch error');
-            return this.getMockResponse(prompt, language);
-        }
-
-        if (!response.ok) {
-            // Try to get error details
-            let errorMessage = `HTTP ${response.status}`;
+        for (let attempt = 1; attempt <= retries; attempt++) {
             try {
-                const errorData = await response.json();
-                errorMessage = errorData.error?.message || errorData.detail || errorMessage;
-            } catch (e) {
-                // Ignore JSON parsing errors
-            }
+                console.log(`📤 Making fetch request (attempt ${attempt}/${retries})...`);
 
-            // If it's a 401/403, suggest getting an API key
-            if (response.status === 401 || response.status === 403) {
-                throw new Error('Authentication failed. Please add your OpenRouter API key in API Settings.');
-            }
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 30000);
 
-            // For other errors, fall back to mock response
-            console.warn('OpenRouter API call failed:', errorMessage);
-            return this.getMockResponse(prompt, language);
+                const response = await fetch('/api-proxy/api/v1/chat/completions', {
+                    method: 'POST',
+                    headers,
+                    signal: controller.signal,
+                    body: JSON.stringify({
+                        model: model,
+                        messages: [
+                            {
+                                role: 'system',
+                                content: this.buildSystemPrompt(language, !!this.currentCodeContext)
+                            },
+                            {
+                                role: 'user',
+                                content: prompt
+                            }
+                        ],
+                        max_tokens: 4000,
+                        temperature: 0.3,
+                        stream: true
+                    })
+                });
+
+                clearTimeout(timeoutId);
+                console.log('📥 Response received. Status:', response.status);
+
+                if (response.ok) {
+                    return await this.processStreamingResponse(response, language);
+                }
+
+                if (response.status === 429) {
+                    const retryAfter = response.headers.get('Retry-After');
+                    const delay = retryAfter ? parseInt(retryAfter) * 1000 : Math.min(1000 * Math.pow(2, attempt), 10000);
+                    console.log(`⏳ Rate limited. Retrying after ${delay}ms...`);
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                    continue;
+                }
+
+                if (response.status === 401 || response.status === 403) {
+                    throw new Error('Authentication failed. Please add your OpenRouter API key in API Settings.');
+                }
+
+                lastError = new Error(`HTTP ${response.status}: ${response.statusText}`);
+            } catch (error: any) {
+                if (error instanceof Error) {
+                    if (error.name === 'AbortError') {
+                        lastError = new Error('Request timeout - please try again');
+                    } else {
+                        lastError = error;
+                    }
+                } else {
+                    lastError = new Error('Unknown error');
+                }
+                console.error(`🚫 Attempt ${attempt} failed:`, lastError);
+
+                if (attempt < retries) {
+                    const delay = Math.min(1000 * Math.pow(2, attempt), 10000);
+                    console.log(`⏳ Retrying in ${delay}ms...`);
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                }
+            }
         }
 
+        console.warn('All API attempts failed, using mock response');
+        this.showToast('API unavailable - using demo response', 'warning');
+        return this.getMockResponse(prompt, language);
+    }
+
+    private async processStreamingResponse(response: Response, language: string): Promise<AIResponse> {
         // Handle streaming response with real-time display
         const reader = response.body?.getReader();
         if (!reader) {
@@ -407,7 +488,7 @@ content here`;
 
         const decoder = new TextDecoder();
         let content = '';
-        
+
         // Initialize the code display for streaming
         this.initializeStreamingDisplay(language);
 
@@ -444,8 +525,8 @@ content here`;
             reader.releaseLock();
         }
 
-    const code = this.extractCodeFromResponse(content, language);
-    return { code, language };
+        const code = this.extractCodeFromResponse(content, language);
+        return { code, language };
     }
 
     private getMockResponse(prompt: string, language: string): AIResponse {
@@ -685,22 +766,40 @@ Please read our contributing guidelines before submitting PRs.
         const name = file.name.toLowerCase();
         const type = (file.type || '').toLowerCase();
 
+        // Add file size check
+        const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+        if (file.size > MAX_FILE_SIZE) {
+            this.showToast('File too large. Maximum size is 10MB', 'error');
+            return '';
+        }
+
         const isPdf = name.endsWith('.pdf') || type === 'application/pdf';
         const isDocx = name.endsWith('.docx') || type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
         const isImage = name.endsWith('.jpg') || name.endsWith('.jpeg') || name.endsWith('.png') || type.startsWith('image/');
 
         try {
             if (isPdf) {
+                this.showToast('Processing PDF...', 'success');
                 const arrayBuffer = await file.arrayBuffer();
                 const task = pdfjsLib.getDocument({ data: arrayBuffer });
                 const pdf = await task.promise;
+
+                // Add page limit check
+                if (pdf.numPages > 100) {
+                    this.showToast('PDF has too many pages (max 100)', 'error');
+                    return '';
+                }
+
                 let fullText = '';
                 for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
                     const page = await pdf.getPage(pageNum);
                     const content = await page.getTextContent();
-                    const strings = content.items.map((item: any) => item.str).filter(Boolean);
+                    const strings = content.items
+                        .map((item: any) => ('str' in item ? (item as any).str : ''))
+                        .filter(Boolean);
                     fullText += strings.join(' ') + '\n\n';
                 }
+                this.showToast('PDF processed successfully', 'success');
                 return fullText.trim();
             }
 
@@ -907,6 +1006,12 @@ Please read our contributing guidelines before submitting PRs.
     }
 
     private updatePreview(code: string, language: string): void {
+        // Clean up previous blob URLs
+        if (this.blobUrls && this.blobUrls.length > 0) {
+            this.blobUrls.forEach(url => URL.revokeObjectURL(url));
+            this.blobUrls = [];
+        }
+
         const previewFrame = document.getElementById('preview-frame') as HTMLIFrameElement;
         const previewPlaceholder = document.getElementById('preview-placeholder');
 
@@ -917,10 +1022,8 @@ Please read our contributing guidelines before submitting PRs.
             
             const blob = new Blob([code], { type: 'text/html' });
             const url = URL.createObjectURL(blob);
+            this.blobUrls.push(url); // Track for cleanup
             previewFrame.src = url;
-            
-            // Clean up blob URL after loading
-            previewFrame.onload = () => URL.revokeObjectURL(url);
         } else if (previewPlaceholder && previewFrame) {
             // Hide preview for non-HTML content
             previewFrame.style.display = 'none';
@@ -1354,7 +1457,7 @@ Please read our contributing guidelines before submitting PRs.
         }
     }
 
-    private showToast(message: string, type: 'success' | 'error' = 'success'): void {
+    private showToast(message: string, type: 'success' | 'error' | 'warning' = 'success'): void {
         const toast = document.getElementById('status-toast');
         if (toast) {
             toast.textContent = message;

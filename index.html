@@ -11,6 +11,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 </head>
 <body>
+    <a href="#main-content" class="skip-link">Skip to main content</a>
     <div class="container">
         <!-- Sidebar -->
         <aside class="sidebar">
@@ -31,7 +32,7 @@
 
                 <div class="input-group">
                     <label for="language">Code Language</label>
-                    <select id="language">
+                    <select id="language" aria-label="Select programming language">
                         <option value="html">HTML</option>
                         <option value="typescript">TypeScript</option>
                         <option value="javascript">JavaScript</option>
@@ -44,7 +45,7 @@
 
                 <div class="input-group">
                     <label for="model">AI Model</label>
-                    <select id="model">
+                    <select id="model" aria-label="Select AI model">
                         <option value="qwen/qwen3-coder:free">Qwen3 Coder (Free)</option>
                         <option value="openai/gpt-5">OpenAI GPT-5</option>
                         <option value="moonshotai/kimi-k2:free">Kimi K2 (Free)</option>
@@ -62,7 +63,7 @@
                     <label for="file-upload">Reference File (Optional)</label>
                     <div class="file-upload-wrapper">
                         <input type="file" id="file-upload" accept=".txt,.md,.json,.js,.ts,.html,.css,.py,.pdf,.docx,.jpg,.jpeg,.png">
-                        <div class="file-upload-button" id="file-upload-button">
+                        <div class="file-upload-button" id="file-upload-button" role="button" tabindex="0" aria-label="Upload reference file">
                             <span class="file-upload-icon">📁</span>
                             <span class="file-upload-text">Choose file or drag & drop</span>
                         </div>
@@ -75,11 +76,11 @@
                 </div>
 
                 <div class="button-group">
-                    <button id="generate-btn" class="btn btn-primary">
+                    <button id="generate-btn" class="btn btn-primary" aria-label="Generate code">
                         <span class="btn-text">Generate</span>
                         <span class="btn-loader">⏳</span>
                     </button>
-                    <button id="clear-btn" class="btn btn-secondary">Clear</button>
+                    <button id="clear-btn" class="btn btn-secondary" aria-label="Clear all inputs">Clear</button>
                 </div>
 
                 <div class="settings-section">
@@ -111,7 +112,7 @@
         </aside>
 
         <!-- Main Content -->
-        <main class="main-content">
+        <main class="main-content" id="main-content" role="main">
             <div class="tabs">
                 <button class="tab-btn active" data-tab="code">Code</button>
                 <button class="tab-btn" data-tab="preview">Preview</button>
@@ -180,5 +181,6 @@
     <!-- Scripts -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
     <script type="module" src="/src/index.ts"></script>
+    <div aria-live="polite" aria-atomic="true" class="sr-only" id="aria-announcements"></div>
 </body>
 </html>
