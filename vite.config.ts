@@ -42,6 +42,41 @@ export default defineConfig({
         }
       },
     },
+    // Dev-only middleware to support /api/scrape locally
+    configureServer(server) {
+      server.middlewares.use('/api/scrape', async (req, res) => {
+        try {
+          const reqUrl = new URL(req.url || '', 'http://localhost');
+          const target = reqUrl.searchParams.get('url') || '';
+          if (!target) {
+            res.statusCode = 400;
+            res.end('URL parameter is required');
+            return;
+          }
+          const response = await fetch(target, {
+            headers: {
+              'User-Agent':
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/98.0.4758.82 Safari/537.36',
+            },
+          });
+
+          if (!response.ok) {
+            res.statusCode = response.status;
+            const msg = await response.text().catch(() => response.statusText);
+            res.end(`Failed to fetch: ${msg}`);
+            return;
+          }
+
+          const html = await response.text();
+          res.statusCode = 200;
+          res.setHeader('Content-Type', 'text/html; charset=utf-8');
+          res.end(html);
+        } catch (error) {
+          res.statusCode = 500;
+          res.end(`Error fetching URL: ${error?.message || 'Unknown error'}`);
+        }
+      });
+    },
   },
   // Optimize dependencies
   optimizeDeps: {
