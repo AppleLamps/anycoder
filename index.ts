@@ -846,12 +846,37 @@ Please read our contributing guidelines before submitting PRs.
     }
 
     private async fetchWebsiteContent(url: string): Promise<string> {
-        const response = await fetch(`/api/scrape?url=${encodeURIComponent(url)}`);
-        if (!response.ok) {
-            const errorText = await response.text();
-            throw new Error(`Failed to fetch website content via proxy: ${errorText}`);
+        if (!this.validateUrl(url)) {
+            throw new Error('Invalid URL format');
         }
-        return await response.text();
+
+        // Try server endpoint first (dev middleware or production function if provided)
+        try {
+            const response = await fetch(`/api/scrape?url=${encodeURIComponent(url)}`);
+            if (response.ok) {
+                return await response.text();
+            } else {
+                const errorText = await response.text().catch(() => response.statusText);
+                console.warn('Primary scrape endpoint failed:', response.status, errorText);
+            }
+        } catch (e) {
+            console.warn('Primary scrape endpoint unreachable, falling back:', e);
+        }
+
+        // Fallback: use a read-only, CORS-friendly proxy that returns extracted page text
+        // Note: This usually returns page text, not full HTML, but is sufficient for prompt context.
+        const fallbackUrl = `https://r.jina.ai/${url}`;
+        const fallbackResp = await fetch(fallbackUrl, {
+            headers: {
+                'User-Agent':
+                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/98.0.4758.82 Safari/537.36'
+            }
+        });
+        if (!fallbackResp.ok) {
+            const errText = await fallbackResp.text().catch(() => fallbackResp.statusText);
+            throw new Error(`Fallback fetch failed: ${fallbackResp.status} ${errText}`);
+        }
+        return await fallbackResp.text();
     }
 
     private async performWebSearch(query: string, language: string): Promise<string> {
