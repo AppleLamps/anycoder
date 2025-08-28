@@ -2,6 +2,7 @@ import * as pdfjsLib from 'pdfjs-dist';
 import workerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import mammoth from 'mammoth';
 import Tesseract from 'tesseract.js';
+import { FileManager, FileInfo } from './fileManager';
 
 declare global {
     interface Window {
@@ -46,6 +47,8 @@ class AnyCoder {
     private currentTheme = 'github-dark';
     private highlightTimeout?: ReturnType<typeof setTimeout>;
     private previewTimeout?: ReturnType<typeof setTimeout>;
+    private throttleTimeout?: ReturnType<typeof setTimeout>;
+    private lastThrottleCall = 0;
     // New iterative editing context
     private currentCodeContext: string = '';
     // Multi-file current map (if applicable)
@@ -155,6 +158,121 @@ class AnyCoder {
         return prompt
             .substring(0, MAX_PROMPT_LENGTH)
             .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, ''); // Remove control characters
+    }
+
+    private validateAIResponse(response: string, language: string): { isValid: boolean; errors: string[]; warnings: string[] } {
+        const errors: string[] = [];
+        const warnings: string[] = [];
+        let isValid = true;
+
+        // Check for empty or minimal response
+        if (!response || response.trim().length < 10) {
+            errors.push('Response is too short or empty');
+            isValid = false;
+        }
+
+        // Check for AI refusal patterns
+        const refusalPatterns = [
+            /I cannot|I can't|I'm not able to|I'm unable to/i,
+            /I don't have the ability|I don't have access/i,
+            /I'm not allowed|I'm not permitted/i,
+            /I cannot provide|I can't provide/i,
+            /I'm sorry, but I cannot/i,
+            /I'm not programmed to/i,
+            /I don't feel comfortable/i,
+            /I cannot assist with/i
+        ];
+
+        for (const pattern of refusalPatterns) {
+            if (pattern.test(response)) {
+                errors.push('AI model refused to generate code');
+                isValid = false;
+                break;
+            }
+        }
+
+        // Check for code presence based on language
+        const codePatterns = {
+            javascript: /(?:function|const|let|var|class|=>|\{|\})/,
+            typescript: /(?:function|const|let|var|class|interface|type|=>|\{|\})/,
+            python: /(?:def |class |import |from |if |for |while |try:|except:|with )/,
+            html: /<[^>]+>/,
+            css: /\{[^}]*\}/,
+            json: /\{[\s\S]*\}|\[[\s\S]*\]/,
+            markdown: /#{1,6}|\*\*|\*|`|\[.*\]\(.*\)/,
+            sql: /(?:SELECT|INSERT|UPDATE|DELETE|CREATE|ALTER|DROP)\s+/i,
+            java: /(?:public|private|protected|class|interface|import)/,
+            csharp: /(?:public|private|protected|class|interface|using|namespace)/,
+            php: /<\?php|\$[a-zA-Z_]/,
+            ruby: /(?:def |class |module |require |include)/,
+            go: /(?:func |package |import |type |var |const)/,
+            rust: /(?:fn |struct |impl |use |mod |let |const)/,
+            swift: /(?:func |class |struct |import |var |let)/,
+            kotlin: /(?:fun |class |interface |import |val |var)/
+        };
+
+        const pattern = codePatterns[language.toLowerCase() as keyof typeof codePatterns];
+        if (pattern && !pattern.test(response)) {
+            warnings.push(`Response may not contain valid ${language} code`);
+        }
+
+        // Check for incomplete code blocks
+        const codeBlockMatches = response.match(/```[\s\S]*?```/g);
+        if (codeBlockMatches) {
+            codeBlockMatches.forEach((block, index) => {
+                if (block.length < 20) {
+                    warnings.push(`Code block ${index + 1} appears to be very short`);
+                }
+                if (!block.endsWith('```')) {
+                    errors.push(`Code block ${index + 1} is not properly closed`);
+                    isValid = false;
+                }
+            });
+        }
+
+        // Check for syntax errors in common languages
+        if (language.toLowerCase() === 'json') {
+            try {
+                const jsonMatch = response.match(/```json\s*([\s\S]*?)```/);
+                if (jsonMatch) {
+                    JSON.parse(jsonMatch[1]);
+                }
+            } catch (e) {
+                errors.push('Invalid JSON syntax detected');
+                isValid = false;
+            }
+        }
+
+        // Check for suspicious content
+        const suspiciousPatterns = [
+            /\[object Object\]/,
+            /undefined|null/g,
+            /Error:|Exception:|Traceback:/,
+            /\[Function\]|\[Circular\]/,
+            /NaN|Infinity/
+        ];
+
+        suspiciousPatterns.forEach(pattern => {
+            if (pattern.test(response)) {
+                warnings.push('Response contains potentially problematic content');
+            }
+        });
+
+        // Check response length
+        if (response.length > 100000) {
+            warnings.push('Response is very large and may cause performance issues');
+        }
+
+        // Check for multi-file format consistency
+        const hasFileDelimiters = /(?:\/\/|#|<!--|\/\*|--|%)\s*(?:FILENAME|FILE):/i.test(response);
+        if (hasFileDelimiters) {
+            const delimiterCount = (response.match(/(?:\/\/|#|<!--|\/\*|--|%)\s*(?:FILENAME|FILE):/gi) || []).length;
+            if (delimiterCount === 1) {
+                warnings.push('Single file delimiter found - this may not be a proper multi-file response');
+            }
+        }
+
+        return { isValid, errors, warnings };
     }
 
     public destroy(): void {
@@ -317,8 +435,32 @@ class AnyCoder {
             this.showToast('Code generated successfully!', 'success');
             this.switchTab('code');
         } catch (error) {
-            console.error('Generation error:', error);
-            this.showToast(`Error: ${error instanceof Error ? error.message : 'Unknown error'}`, 'error');
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            console.error('❌ Generation error:', errorMessage);
+            
+            // Categorize errors and provide helpful feedback
+            if (errorMessage.includes('API key') || errorMessage.includes('authentication')) {
+                this.showToast('Authentication failed. Please check your API key.', 'error');
+            } else if (errorMessage.includes('rate limit') || errorMessage.includes('429')) {
+                this.showToast('Rate limit exceeded. Please wait a moment and try again.', 'error');
+            } else if (errorMessage.includes('timeout') || errorMessage.includes('abort')) {
+                this.showToast('Request timed out. Try with a shorter prompt or check your connection.', 'error');
+            } else if (errorMessage.includes('network') || errorMessage.includes('fetch')) {
+                this.showToast('Network error. Please check your internet connection.', 'error');
+            } else if (errorMessage.includes('validation') || errorMessage.includes('invalid')) {
+                this.showToast('Invalid input detected. Please check your prompt and settings.', 'error');
+            } else if (errorMessage.includes('quota') || errorMessage.includes('billing')) {
+                this.showToast('API quota exceeded. Please check your account billing.', 'error');
+            } else if (errorMessage.includes('model') || errorMessage.includes('unavailable')) {
+                this.showToast('Selected model is unavailable. Try a different model.', 'error');
+            } else {
+                this.showToast(`Generation failed: ${errorMessage}`, 'error');
+            }
+            
+            // Log detailed error for debugging
+            if (error instanceof Error && error.stack) {
+                console.error('Error stack:', error.stack);
+            }
         } finally {
             this.setGenerating(false);
         }
@@ -345,49 +487,109 @@ class AnyCoder {
     }
 
     private async generateCode(config: GenerationConfig): Promise<AIResponse> {
-        // Enhanced prompt with context
-        let enhancedPrompt = this.buildEnhancedPrompt(config);
-
-        // Add reference file content if provided
-        if (config.referenceFile) {
-            const fileContent = await this.readFileContent(config.referenceFile);
-            enhancedPrompt += `\n\nReference file content:\n${fileContent}`;
-        }
-
-        // Add website content if URL provided
-        if (config.websiteUrl) {
+        const maxRetries = 3;
+        let lastError: Error | null = null;
+        
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
             try {
-                const websiteContent = await this.fetchWebsiteContent(config.websiteUrl);
-                enhancedPrompt += `\n\nWebsite to redesign:\n${websiteContent}`;
-            } catch (error) {
-                console.warn('Failed to fetch website content:', error);
-            }
-        }
+                console.log(`🔄 Generation attempt ${attempt}/${maxRetries}`);
+                
+                // Enhanced prompt with context
+                let enhancedPrompt = this.buildEnhancedPrompt(config);
 
-        // Web search enhancement
-        if (config.webSearch) {
-            try {
-                const searchResults = await this.performWebSearch(config.prompt, config.language);
-                enhancedPrompt += `\n\nWeb search context:\n${searchResults}`;
-            } catch (error) {
-                console.warn('Web search failed:', error);
-            }
-        }
+                // Add reference file content if provided
+                if (config.referenceFile) {
+                    const fileContent = await this.readFileContent(config.referenceFile);
+                    enhancedPrompt += `\n\nReference file content:\n${fileContent}`;
+                }
 
-        // Use OpenRouter with OpenAI-compatible API
-        const ai = await this.callOpenRouter(enhancedPrompt, config.language, config.model, config.apiKey);
-        // Parse potential multi-file output
-        if (typeof ai.code === 'string') {
-            console.log('🔍 Checking for multi-file content in response:', ai.code.substring(0, 500) + '...');
-            const parsed = this.parseMultiFile(ai.code);
-            if (parsed) {
-                console.log('✅ Multi-file detected! Files:', Object.keys(parsed));
-                return { code: parsed, language: config.language };
-            } else {
-                console.log('❌ No multi-file pattern detected, treating as single file');
+                // Add website content if URL provided
+                if (config.websiteUrl) {
+                    try {
+                        const websiteContent = await this.fetchWebsiteContent(config.websiteUrl);
+                        enhancedPrompt += `\n\nWebsite to redesign:\n${websiteContent}`;
+                    } catch (error) {
+                        console.warn('Failed to fetch website content:', error);
+                    }
+                }
+
+                // Web search enhancement
+                if (config.webSearch) {
+                    try {
+                        const searchResults = await this.performWebSearch(config.prompt, config.language);
+                        enhancedPrompt += `\n\nWeb search context:\n${searchResults}`;
+                    } catch (error) {
+                        console.warn('Web search failed:', error);
+                    }
+                }
+
+                // Use OpenRouter with OpenAI-compatible API
+                const ai = await this.callOpenRouter(enhancedPrompt, config.language, config.model, config.apiKey);
+                
+                // Validate AI response
+                const responseText = typeof ai.code === 'string' ? ai.code : JSON.stringify(ai.code);
+                const validation = this.validateAIResponse(responseText, config.language);
+                
+                // Log validation results
+                if (validation.warnings.length > 0) {
+                    console.warn('⚠️ Response validation warnings:', validation.warnings);
+                    validation.warnings.forEach(warning => {
+                        this.showToast(warning, 'warning');
+                    });
+                }
+                
+                if (!validation.isValid) {
+                    console.error('❌ Response validation failed:', validation.errors);
+                    
+                    // If this is the last attempt, show errors to user
+                    if (attempt === maxRetries) {
+                        validation.errors.forEach(error => {
+                            this.showToast(`Validation error: ${error}`, 'error');
+                        });
+                        throw new Error(`Response validation failed: ${validation.errors.join(', ')}`);
+                    }
+                    
+                    // Wait before retry with exponential backoff
+                    const delay = Math.min(1000 * Math.pow(2, attempt - 1), 5000);
+                    console.log(`⏳ Waiting ${delay}ms before retry...`);
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                    continue;
+                }
+                
+                console.log('✅ Response validation passed');
+                
+                // Parse potential multi-file output
+                if (typeof ai.code === 'string') {
+                    console.log('🔍 Checking for multi-file content in response:', ai.code.substring(0, 500) + '...');
+                    const parsed = this.parseMultiFile(ai.code);
+                    if (parsed) {
+                        console.log('✅ Multi-file detected! Files:', Object.keys(parsed));
+                        return { code: parsed, language: config.language };
+                    } else {
+                        console.log('❌ No multi-file pattern detected, treating as single file');
+                    }
+                }
+                return ai;
+                
+            } catch (error) {
+                lastError = error as Error;
+                console.error(`❌ Generation attempt ${attempt} failed:`, error);
+                
+                if (attempt === maxRetries) {
+                    break;
+                }
+                
+                // Wait before retry with exponential backoff
+                const delay = Math.min(1000 * Math.pow(2, attempt - 1), 5000);
+                console.log(`⏳ Waiting ${delay}ms before retry...`);
+                await new Promise(resolve => setTimeout(resolve, delay));
             }
         }
-        return ai;
+        
+        // If we get here, all retries failed
+        const errorMessage = lastError?.message || 'Unknown error occurred';
+        this.showToast(`Code generation failed after ${maxRetries} attempts: ${errorMessage}`, 'error');
+        throw lastError || new Error('Code generation failed after multiple attempts');
     }
 
     private buildEnhancedPrompt(config: GenerationConfig): string {
@@ -583,8 +785,8 @@ class AnyCoder {
                             const deltaContent = parsed.choices?.[0]?.delta?.content;
                             if (deltaContent) {
                                 content += deltaContent;
-                                // Update display in real-time
-                                this.updateStreamingDisplay(content, language);
+                                // Update display in real-time with throttling
+                                this.throttledUpdateDisplay(content, language);
                             }
                         } catch (e) {
                             // Ignore JSON parsing errors for malformed chunks
@@ -900,17 +1102,63 @@ Please read our contributing guidelines before submitting PRs.
                 reader.readAsText(file);
             });
         } catch (err) {
-            console.error('Failed to process file:', err);
-            this.showToast('Failed to process file', 'error');
-            // Best-effort fallback to text
-            try {
-                return await new Promise<string>((resolve, reject) => {
-                    const reader = new FileReader();
-                    reader.onload = () => resolve(reader.result as string);
-                    reader.onerror = () => reject(new Error('Failed to read file'));
-                    reader.readAsText(file);
-                });
-            } catch {
+            const errorMessage = err instanceof Error ? err.message : 'Unknown file processing error';
+            console.error('❌ File processing failed:', errorMessage);
+            
+            // Provide specific error feedback based on error type
+            if (errorMessage.includes('timeout') || errorMessage.includes('abort')) {
+                this.showToast('File processing timed out. Try a smaller file.', 'error');
+            } else if (errorMessage.includes('memory') || errorMessage.includes('out of memory')) {
+                this.showToast('File too large for processing. Try a smaller file.', 'error');
+            } else if (errorMessage.includes('corrupt') || errorMessage.includes('invalid')) {
+                this.showToast('File appears to be corrupted or invalid.', 'error');
+            } else if (isPdf) {
+                this.showToast(`PDF processing failed: ${errorMessage}`, 'error');
+            } else if (isDocx) {
+                this.showToast(`Word document processing failed: ${errorMessage}`, 'error');
+            } else if (isImage) {
+                this.showToast(`Image OCR processing failed: ${errorMessage}`, 'error');
+            } else {
+                this.showToast(`Failed to process file: ${errorMessage}`, 'error');
+            }
+            
+            // Enhanced fallback strategy with timeout and better error handling
+            if (file.size < 5 * 1024 * 1024 && !isImage && !isPdf) { // Only try text fallback for small non-binary files
+                console.log('🔄 Attempting text fallback for small file...');
+                try {
+                    return await new Promise<string>((resolve, reject) => {
+                        const reader = new FileReader();
+                        const timeout = setTimeout(() => {
+                            reader.abort();
+                            reject(new Error('Fallback reading timeout'));
+                        }, 15000); // 15 second timeout for fallback
+                        
+                        reader.onload = () => {
+                            clearTimeout(timeout);
+                            const content = reader.result as string;
+                            if (content && content.trim()) {
+                                console.log('✅ Text fallback successful');
+                                this.showToast('File processed using text fallback', 'warning');
+                                resolve(content);
+                            } else {
+                                reject(new Error('Fallback produced empty content'));
+                            }
+                        };
+                        
+                        reader.onerror = () => {
+                            clearTimeout(timeout);
+                            reject(new Error(`Fallback reading failed: ${reader.error?.message || 'Unknown error'}`));
+                        };
+                        
+                        reader.readAsText(file);
+                    });
+                } catch (fallbackError) {
+                    console.error('❌ Text fallback also failed:', fallbackError);
+                    this.showToast('All file processing methods failed', 'error');
+                    return '';
+                }
+            } else {
+                console.log('⚠️ Skipping text fallback for large or binary file');
                 return '';
             }
         }
@@ -918,36 +1166,109 @@ Please read our contributing guidelines before submitting PRs.
 
     private async fetchWebsiteContent(url: string): Promise<string> {
         if (!this.validateUrl(url)) {
-            throw new Error('Invalid URL format');
+            const error = new Error('Invalid URL format');
+            this.showToast('Invalid URL format provided', 'error');
+            throw error;
         }
 
-        // Try server endpoint first (dev middleware or production function if provided)
+        console.log(`🌐 Fetching website content from: ${url}`);
+        
+        // Create AbortController for timeout management
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
+        
         try {
-            const response = await fetch(`/api/scrape?url=${encodeURIComponent(url)}`);
-            if (response.ok) {
-                return await response.text();
-            } else {
-                const errorText = await response.text().catch(() => response.statusText);
-                console.warn('Primary scrape endpoint failed:', response.status, errorText);
+            // Try server endpoint first (dev middleware or production function if provided)
+            try {
+                console.log('🔄 Attempting primary scrape endpoint...');
+                const response = await fetch(`/api/scrape?url=${encodeURIComponent(url)}`, {
+                    signal: controller.signal,
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                if (response.ok) {
+                    const content = await response.text();
+                    if (content && content.trim()) {
+                        console.log('✅ Primary scrape endpoint successful');
+                        this.showToast('Website content fetched successfully', 'success');
+                        return content;
+                    } else {
+                        console.warn('⚠️ Primary endpoint returned empty content');
+                    }
+                } else {
+                    const errorText = await response.text().catch(() => response.statusText);
+                    console.warn(`❌ Primary scrape endpoint failed: ${response.status} ${errorText}`);
+                    
+                    if (response.status === 429) {
+                        this.showToast('Rate limit exceeded. Trying fallback method...', 'warning');
+                    } else if (response.status >= 500) {
+                        this.showToast('Server error. Trying fallback method...', 'warning');
+                    }
+                }
+            } catch (primaryError) {
+                if (primaryError instanceof Error && primaryError.name === 'AbortError') {
+                    throw new Error('Primary scrape request timed out');
+                }
+                console.warn('🔄 Primary scrape endpoint unreachable, falling back:', primaryError);
+                this.showToast('Primary scraping method failed. Trying fallback...', 'warning');
             }
-        } catch (e) {
-            console.warn('Primary scrape endpoint unreachable, falling back:', e);
-        }
 
-        // Fallback: use a read-only, CORS-friendly proxy that returns extracted page text
-        // Note: This usually returns page text, not full HTML, but is sufficient for prompt context.
-        const fallbackUrl = `https://r.jina.ai/${url}`;
-        const fallbackResp = await fetch(fallbackUrl, {
-            headers: {
-                'User-Agent':
-                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/98.0.4758.82 Safari/537.36'
+            // Fallback: use a read-only, CORS-friendly proxy that returns extracted page text
+            console.log('🔄 Attempting fallback scrape method...');
+            const fallbackUrl = `https://r.jina.ai/${url}`;
+            
+            const fallbackResp = await fetch(fallbackUrl, {
+                signal: controller.signal,
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/98.0.4758.82 Safari/537.36',
+                    'Accept': 'text/plain, text/html, */*'
+                }
+            });
+            
+            if (!fallbackResp.ok) {
+                const errText = await fallbackResp.text().catch(() => fallbackResp.statusText);
+                const errorMsg = `Fallback fetch failed: ${fallbackResp.status} ${errText}`;
+                
+                if (fallbackResp.status === 403) {
+                    this.showToast('Website blocked access. Try a different URL.', 'error');
+                } else if (fallbackResp.status === 404) {
+                    this.showToast('Website not found. Check the URL.', 'error');
+                } else if (fallbackResp.status === 429) {
+                    this.showToast('Too many requests. Please wait and try again.', 'error');
+                } else {
+                    this.showToast(`Failed to fetch website: ${fallbackResp.status}`, 'error');
+                }
+                
+                throw new Error(errorMsg);
             }
-        });
-        if (!fallbackResp.ok) {
-            const errText = await fallbackResp.text().catch(() => fallbackResp.statusText);
-            throw new Error(`Fallback fetch failed: ${fallbackResp.status} ${errText}`);
+            
+            const content = await fallbackResp.text();
+            if (!content || !content.trim()) {
+                const error = new Error('Website returned empty content');
+                this.showToast('Website content is empty or unavailable', 'error');
+                throw error;
+            }
+            
+            console.log('✅ Fallback scrape method successful');
+            this.showToast('Website content fetched using fallback method', 'success');
+            return content;
+            
+        } catch (error) {
+            if (error instanceof Error && error.name === 'AbortError') {
+                const timeoutError = new Error('Website fetch timed out after 30 seconds');
+                this.showToast('Website fetch timed out. Try again or use a different URL.', 'error');
+                throw timeoutError;
+            }
+            
+            // Re-throw with enhanced error context
+            const enhancedError = new Error(`Failed to fetch website content: ${error instanceof Error ? error.message : 'Unknown error'}`);
+            console.error('❌ All website fetching methods failed:', enhancedError.message);
+            throw enhancedError;
+        } finally {
+            clearTimeout(timeoutId);
         }
-        return await fallbackResp.text();
     }
 
     private async performWebSearch(query: string, language: string): Promise<string> {
@@ -1185,33 +1506,81 @@ Please read our contributing guidelines before submitting PRs.
         console.log('📄 First 200 chars:', raw.substring(0, 200));
         
         const lines = raw.split(/\r?\n/);
-        const files: Record<string, string> = {};
+        const fileInfos: FileInfo[] = [];
         let current: string | null = null;
         let buffer: string[] = [];
 
+        // Enhanced delimiter patterns for different comment styles
+        const delimiterPatterns = [
+            /^\s*\/\/\s*(?:FILENAME|FILE):\s*(.+)$/i,           // // FILENAME: or // FILE:
+            /^\s*\/\*\s*(?:FILENAME|FILE):\s*(.+?)\s*\*\/$/i,   // /* FILENAME: ... */
+            /^\s*#\s*(?:FILENAME|FILE):\s*(.+)$/i,              // # FILENAME: or # FILE:
+            /^\s*<!--\s*(?:FILENAME|FILE):\s*(.+?)\s*-->$/i,    // <!-- FILENAME: ... -->
+            /^\s*;+\s*(?:FILENAME|FILE):\s*(.+)$/i,             // ;;; FILENAME: (for Lisp-like)
+            /^\s*%\s*(?:FILENAME|FILE):\s*(.+)$/i,              // % FILENAME: (for LaTeX/MATLAB)
+            /^\s*--\s*(?:FILENAME|FILE):\s*(.+)$/i              // -- FILENAME: (for SQL/Haskell)
+        ];
+
         const flush = () => {
-            if (current !== null) {
+            if (current !== null && buffer.length > 0) {
                 // More conservative trimming - only remove leading/trailing empty lines
                 const content = buffer.join('\n');
                 const trimmed = content.replace(/^\n+/, '').replace(/\n+$/, '');
-                files[current] = trimmed;
-                console.log(`📝 Found file: ${current} (${trimmed.length} chars)`);
+                
+                if (trimmed.trim()) { // Only add non-empty files
+                    fileInfos.push({
+                        filename: current,
+                        content: trimmed
+                    });
+                    console.log(`📝 Found file: ${current} (${trimmed.length} chars)`);
+                }
             }
             current = null;
             buffer = [];
         };
 
         for (const line of lines) {
-            const m = line.match(/^\s*\/\/\s*FILENAME:\s*(.+)$/i);
-            if (m) {
-                flush();
-                current = m[1].trim();
-                console.log(`🏷️ New file detected: ${current}`);
-            } else {
+            let matched = false;
+            
+            // Try each delimiter pattern
+            for (const pattern of delimiterPatterns) {
+                const match = line.match(pattern);
+                if (match) {
+                    flush();
+                    current = FileManager.sanitizeFilename(match[1].trim());
+                    console.log(`🏷️ New file detected: ${current}`);
+                    matched = true;
+                    break;
+                }
+            }
+            
+            if (!matched) {
                 buffer.push(line);
             }
         }
         flush();
+
+        if (fileInfos.length === 0) {
+            console.log('❌ No files found with supported delimiters');
+            return null;
+        }
+
+        // Validate and merge duplicate files
+        const validatedFiles = fileInfos.map(file => FileManager.validateFile(file));
+        const mergedFiles = FileManager.mergeDuplicateFiles(validatedFiles);
+        
+        // Log validation warnings
+        mergedFiles.forEach(file => {
+            if (file.errors && file.errors.length > 0) {
+                console.warn(`⚠️ File ${file.filename} has issues:`, file.errors);
+            }
+        });
+
+        // Convert to the expected format
+        const files: Record<string, string> = {};
+        mergedFiles.forEach(file => {
+            files[file.filename] = file.content;
+        });
 
         const count = Object.keys(files).length;
         console.log(`📊 Total files found: ${count}`, Object.keys(files));
@@ -1374,46 +1743,140 @@ Please read our contributing guidelines before submitting PRs.
         const languageEl = document.getElementById('language') as HTMLSelectElement;
         
         if (this.currentFiles) {
-            // zip download
+            // Enhanced multi-file download with project structure analysis
             try {
+                console.log('📁 Analyzing project structure for download...');
+                
+                // Convert files to FileInfo format for analysis
+                const fileInfos: FileInfo[] = Object.entries(this.currentFiles).map(([name, content]) => ({
+                    filename: name,
+                    content,
+                    size: content.length
+                }));
+                
+                // Analyze and organize project structure
+                const organizationResult = FileManager.organizeFiles(fileInfos);
+                const { structure: projectStructure, organizedFiles } = organizationResult;
+                
+                console.log('📊 Project analysis:', {
+                    type: projectStructure.type,
+                    mainFile: projectStructure.mainFile,
+                    totalFiles: Object.values(organizedFiles).flat().length
+                });
+                
                 const JSZip = await import('jszip');
                 const zip = new JSZip.default();
-                for (const [name, content] of Object.entries(this.currentFiles)) {
-                    zip.file(name, content);
+                
+                // Add files with organized folder structure
+                for (const [folder, files] of Object.entries(organizedFiles)) {
+                    for (const fileInfo of files) {
+                        const fullPath = folder === 'root' ? fileInfo.filename : `${folder}/${fileInfo.filename}`;
+                        
+                        // Validate file content before adding to zip
+                        const validation = FileManager.validateFile(fileInfo);
+                        if (!validation.isValid && validation.errors) {
+                            console.warn(`⚠️ File validation errors for ${fileInfo.filename}:`, validation.errors);
+                            validation.errors.forEach(error => {
+                                this.showToast(`File validation: ${error}`, 'warning');
+                            });
+                        }
+                        
+                        zip.file(fullPath, fileInfo.content);
+                    }
                 }
-                const blob = await zip.generateAsync({ type: 'blob' });
+                
+                // Generate project name based on main file or project type
+                const projectName = projectStructure.mainFile 
+                    ? projectStructure.mainFile.replace(/\.[^/.]+$/, '') 
+                    : `${projectStructure.type}-project`;
+                
+                const blob = await zip.generateAsync({ 
+                    type: 'blob',
+                    compression: 'DEFLATE',
+                    compressionOptions: { level: 6 }
+                });
+                
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url;
-                a.download = 'project.zip';
+                a.download = `${FileManager.sanitizeFilename(projectName)}.zip`;
                 document.body.appendChild(a);
                 a.click();
                 document.body.removeChild(a);
                 URL.revokeObjectURL(url);
-                this.showToast('Downloaded project.zip', 'success');
+                
+                this.showToast(`Downloaded ${projectName}.zip with organized structure`, 'success');
                 return;
+                
             } catch (e) {
-                console.error('Zip failed', e);
-                this.showToast('Failed to create zip', 'error');
+                console.error('❌ Enhanced zip creation failed:', e);
+                this.showToast('Enhanced zip failed, trying fallback...', 'warning');
+                
+                // Fallback to simple zip creation
+                try {
+                    const JSZip = await import('jszip');
+                    const zip = new JSZip.default();
+                    for (const [name, content] of Object.entries(this.currentFiles)) {
+                        zip.file(name, content);
+                    }
+                    const blob = await zip.generateAsync({ type: 'blob' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = 'project.zip';
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                    this.showToast('Downloaded project.zip (fallback)', 'success');
+                    return;
+                } catch (fallbackError) {
+                    console.error('❌ Fallback zip creation also failed:', fallbackError);
+                    this.showToast('Failed to create zip file', 'error');
+                    
+                    // Final fallback: download individual files
+                    this.showToast('Attempting individual file downloads...', 'warning');
+                    for (const [name, content] of Object.entries(this.currentFiles)) {
+                        try {
+                            const blob = new Blob([content], { type: 'text/plain' });
+                            const url = URL.createObjectURL(blob);
+                            const a = document.createElement('a');
+                            a.href = url;
+                            a.download = FileManager.sanitizeFilename(name);
+                            document.body.appendChild(a);
+                            a.click();
+                            document.body.removeChild(a);
+                            URL.revokeObjectURL(url);
+                        } catch (fileError) {
+                            console.error(`Failed to download ${name}:`, fileError);
+                        }
+                    }
+                    this.showToast('Downloaded individual files', 'success');
+                }
             }
         }
 
+        // Single file download with enhanced validation
         if (codeElement && languageEl) {
             const code = codeElement.textContent || '';
             const language = languageEl.value;
-            const extensions: Record<string, string> = {
-                'html': 'html',
-                'typescript': 'ts',
-                'javascript': 'js',
-                'python': 'py',
-                'css': 'css',
-                'json': 'json',
-                'markdown': 'md'
+            
+            // Validate single file content
+            const fileInfo: FileInfo = {
+                filename: `generated-code.${this.getFileExtension(language)}`,
+                content: code,
+                language: language
             };
             
-            const extension = extensions[language] || 'txt';
-            const filename = `generated-code.${extension}`;
+            const validation = FileManager.validateFile(fileInfo);
+            if (!validation.isValid && validation.errors) {
+                console.warn('⚠️ Single file validation errors:', validation.errors);
+                validation.errors.forEach(error => {
+                    this.showToast(`File validation: ${error}`, 'warning');
+                });
+            }
             
+            const filename = FileManager.sanitizeFilename(fileInfo.filename);
             const blob = new Blob([code], { type: 'text/plain' });
             const url = URL.createObjectURL(blob);
             
@@ -1427,6 +1890,19 @@ Please read our contributing guidelines before submitting PRs.
             
             this.showToast(`Downloaded ${filename}`, 'success');
         }
+    }
+    
+    private getFileExtension(language: string): string {
+        const extensions: Record<string, string> = {
+            'html': 'html',
+            'typescript': 'ts',
+            'javascript': 'js',
+            'python': 'py',
+            'css': 'css',
+            'json': 'json',
+            'markdown': 'md'
+        };
+        return extensions[language] || 'txt';
     }
 
     private changeTheme(theme: string): void {
@@ -1570,6 +2046,29 @@ Please read our contributing guidelines before submitting PRs.
         div.textContent = text;
         return div.innerHTML;
     }
+
+    private throttle<T extends (...args: any[]) => void>(func: T, delay: number): T {
+        return ((...args: Parameters<T>) => {
+            const now = Date.now();
+            if (now - this.lastThrottleCall >= delay) {
+                this.lastThrottleCall = now;
+                func.apply(this, args);
+            } else {
+                // Clear existing timeout and set a new one
+                if (this.throttleTimeout) {
+                    clearTimeout(this.throttleTimeout);
+                }
+                this.throttleTimeout = setTimeout(() => {
+                    this.lastThrottleCall = Date.now();
+                    func.apply(this, args);
+                }, delay - (now - this.lastThrottleCall));
+            }
+        }) as T;
+    }
+
+    private throttledUpdateDisplay = this.throttle((content: string, language: string) => {
+        this.updateStreamingDisplay(content, language);
+    }, 100);
 
     private formatDate(date: Date): string {
         return new Intl.DateTimeFormat('en-US', {
@@ -1728,7 +2227,32 @@ out, err, err_msg
     }
 }
 
+// Global error handlers for better user experience
+window.addEventListener('error', (event) => {
+    console.error('❌ Uncaught error:', event.error);
+    const anyCoder = (window as any).anyCoderInstance;
+    if (anyCoder && typeof anyCoder.showToast === 'function') {
+        anyCoder.showToast('An unexpected error occurred. Please refresh the page if issues persist.', 'error');
+    }
+});
+
+window.addEventListener('unhandledrejection', (event) => {
+    console.error('❌ Unhandled promise rejection:', event.reason);
+    const anyCoder = (window as any).anyCoderInstance;
+    if (anyCoder && typeof anyCoder.showToast === 'function') {
+        const reason = event.reason instanceof Error ? event.reason.message : String(event.reason);
+        if (reason.includes('API') || reason.includes('network') || reason.includes('fetch')) {
+            anyCoder.showToast('Network or API error occurred. Please try again.', 'error');
+        } else {
+            anyCoder.showToast('An unexpected error occurred. Please try again.', 'error');
+        }
+    }
+    event.preventDefault(); // Prevent the default unhandled rejection behavior
+});
+
 // Initialize the application when DOM is loaded
 document.addEventListener('DOMContentLoaded', () => {
-    new AnyCoder();
+    const anyCoder = new AnyCoder();
+    // Store instance globally for error handlers
+    (window as any).anyCoderInstance = anyCoder;
 });
