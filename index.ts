@@ -59,6 +59,72 @@ class AnyCoder {
     private cleanupHandlers: Array<() => void> = [];
     private blobUrls: string[] = [];
 
+    // Language-specific system prompts for optimal AI performance
+    private languagePrompts: Record<string, string> = {
+        'typescript': `You are an expert TypeScript developer with deep knowledge of modern TypeScript patterns. Focus on:
+- Strong typing with interfaces, types, and generics
+- Modern ES6+ features (async/await, destructuring, arrow functions)
+- Clean, maintainable code architecture with proper separation of concerns
+- Comprehensive error handling with try-catch blocks
+- Use of utility types and advanced TypeScript features
+- Proper module imports/exports and dependency management
+- Performance optimization and memory management`,
+        
+        'javascript': `You are an expert JavaScript developer specializing in modern ES6+ development. Focus on:
+- Modern ES6+ syntax (arrow functions, destructuring, template literals, async/await)
+- Clean, readable code with descriptive variable and function names
+- Efficient DOM manipulation and event handling
+- Proper use of closures, promises, and async patterns
+- Performance optimization and best practices
+- Cross-browser compatibility considerations
+- Modular code organization`,
+        
+        'python': `You are an expert Python developer following industry best practices. Focus on:
+- Pythonic code adhering to PEP 8 style guidelines
+- Proper use of list comprehensions, generators, and iterators
+- Clear docstrings and type hints for better code documentation
+- Efficient algorithms and appropriate data structures
+- Comprehensive exception handling with specific exception types
+- Object-oriented programming principles when appropriate
+- Performance optimization and memory efficiency`,
+        
+        'html': `You are an expert HTML developer focused on modern web standards. Focus on:
+- Semantic HTML5 elements for better structure and meaning
+- Accessibility best practices (ARIA labels, alt text, proper heading hierarchy)
+- SEO-friendly markup with appropriate meta tags
+- Mobile-responsive design principles
+- Clean, well-indented, and properly nested markup
+- Performance optimization (lazy loading, efficient structure)
+- Cross-browser compatibility and progressive enhancement`,
+        
+        'css': `You are an expert CSS developer specializing in modern styling techniques. Focus on:
+- Modern CSS3 features (flexbox, grid, custom properties, animations)
+- Mobile-first responsive design with proper breakpoints
+- Clean, organized stylesheets with logical structure
+- Performance optimization (efficient selectors, minimal reflows)
+- Cross-browser compatibility and vendor prefixes when needed
+- Accessibility considerations (focus states, contrast ratios)
+- Maintainable code with consistent naming conventions`,
+        
+        'json': `You are an expert at creating well-structured, valid JSON data. Focus on:
+- Proper JSON syntax with correct quotation marks and formatting
+- Logical data organization with intuitive key-value relationships
+- Consistent naming conventions (camelCase or snake_case)
+- Appropriate data types for different values
+- Efficient structure that minimizes redundancy
+- Clear hierarchy and nesting when appropriate
+- Validation-ready format`,
+        
+        'markdown': `You are an expert technical writer specializing in clear documentation. Focus on:
+- Clear, well-structured documentation with logical flow
+- Proper markdown syntax and formatting
+- Effective use of headers, lists, code blocks, and tables
+- Professional formatting with consistent style
+- Comprehensive coverage of topics with examples
+- User-friendly navigation and organization
+- Accessibility considerations in documentation structure`
+    };
+
     constructor() {
         this.initializeEventListeners();
         this.loadTheme();
@@ -335,8 +401,13 @@ class AnyCoder {
     }
 
     private buildSystemPrompt(language: string, hasContext: boolean): string {
+        // Get language-specific prompt or fallback to generic
+        const languageSpecificPrompt = this.languagePrompts[language] || 
+            `You are an expert ${language} code generator inside AnyCoder.`;
+        
         return [
-            `You are an expert ${language} code generator inside AnyCoder.`,
+            languageSpecificPrompt,
+            '',
 
             'OUTPUT CONTRACT:',
             '- Output ONLY code. No explanations, no markdown, no backticks.',
