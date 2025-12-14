@@ -44,7 +44,7 @@ interface AIResponse {
 
 class AnyCoder {
     private history: HistoryItem[] = [];
-    private currentTheme = 'github-dark';
+    private currentTheme = 'github';
     private highlightTimeout?: ReturnType<typeof setTimeout>;
     private previewTimeout?: ReturnType<typeof setTimeout>;
     private throttleTimeout?: ReturnType<typeof setTimeout>;
@@ -75,7 +75,7 @@ class AnyCoder {
 - Use of utility types and advanced TypeScript features
 - Proper module imports/exports and dependency management
 - Performance optimization and memory management`,
-        
+
         'javascript': `You are an expert JavaScript developer specializing in modern ES6+ development. Focus on:
 - Modern ES6+ syntax (arrow functions, destructuring, template literals, async/await)
 - Clean, readable code with descriptive variable and function names
@@ -84,7 +84,7 @@ class AnyCoder {
 - Performance optimization and best practices
 - Cross-browser compatibility considerations
 - Modular code organization`,
-        
+
         'python': `You are an expert Python developer following industry best practices. Focus on:
 - Pythonic code adhering to PEP 8 style guidelines
 - Proper use of list comprehensions, generators, and iterators
@@ -93,7 +93,7 @@ class AnyCoder {
 - Comprehensive exception handling with specific exception types
 - Object-oriented programming principles when appropriate
 - Performance optimization and memory efficiency`,
-        
+
         'html': `You are an expert HTML developer focused on modern web standards. Focus on:
 - Semantic HTML5 elements for better structure and meaning
 - Accessibility best practices (ARIA labels, alt text, proper heading hierarchy)
@@ -102,7 +102,7 @@ class AnyCoder {
 - Clean, well-indented, and properly nested markup
 - Performance optimization (lazy loading, efficient structure)
 - Cross-browser compatibility and progressive enhancement`,
-        
+
         'css': `You are an expert CSS developer specializing in modern styling techniques. Focus on:
 - Modern CSS3 features (flexbox, grid, custom properties, animations)
 - Mobile-first responsive design with proper breakpoints
@@ -111,7 +111,7 @@ class AnyCoder {
 - Cross-browser compatibility and vendor prefixes when needed
 - Accessibility considerations (focus states, contrast ratios)
 - Maintainable code with consistent naming conventions`,
-        
+
         'json': `You are an expert at creating well-structured, valid JSON data. Focus on:
 - Proper JSON syntax with correct quotation marks and formatting
 - Logical data organization with intuitive key-value relationships
@@ -120,7 +120,7 @@ class AnyCoder {
 - Efficient structure that minimizes redundancy
 - Clear hierarchy and nesting when appropriate
 - Validation-ready format`,
-        
+
         'markdown': `You are an expert technical writer specializing in clear documentation. Focus on:
 - Clear, well-structured documentation with logical flow
 - Proper markdown syntax and formatting
@@ -135,6 +135,8 @@ class AnyCoder {
         this.initializeEventListeners();
         this.loadTheme();
         this.loadHistory();
+        this.loadApiKey();
+        this.loadModel();
         this.initPyodide();
         this.loadModels();
     }
@@ -192,11 +194,11 @@ class AnyCoder {
 
         const filtered = q
             ? models.filter((m) => {
-                  const id = m.id.toLowerCase();
-                  const name = (m.metadata?.display_name || '').toLowerCase();
-                  const owner = (m.owned_by || '').toLowerCase();
-                  return id.includes(q) || name.includes(q) || owner.includes(q);
-              })
+                const id = m.id.toLowerCase();
+                const name = (m.metadata?.display_name || '').toLowerCase();
+                const owner = (m.owned_by || '').toLowerCase();
+                return id.includes(q) || name.includes(q) || owner.includes(q);
+            })
             : models;
 
         modelSelect.innerHTML = '';
@@ -218,6 +220,14 @@ class AnyCoder {
 
         if (prevValue && filtered.some((m) => m.id === prevValue)) {
             modelSelect.value = prevValue;
+            return;
+        }
+
+        // Check for saved model in localStorage  
+        const savedModel = localStorage.getItem('anycoder-model');
+        const isCustom = localStorage.getItem('anycoder-model-is-custom') === 'true';
+        if (!isCustom && savedModel && filtered.some((m) => m.id === savedModel)) {
+            modelSelect.value = savedModel;
             return;
         }
 
@@ -428,7 +438,7 @@ class AnyCoder {
             });
         });
 
-    // Copy button
+        // Copy button
         const copyBtn = document.getElementById('copy-btn') as HTMLButtonElement;
         copyBtn?.addEventListener('click', () => this.copyCode());
 
@@ -436,9 +446,9 @@ class AnyCoder {
         const downloadBtn = document.getElementById('download-btn') as HTMLButtonElement;
         downloadBtn?.addEventListener('click', () => this.downloadCode());
 
-    // Run button
-    const runBtn = document.getElementById('run-btn') as HTMLButtonElement;
-    runBtn?.addEventListener('click', () => this.runCode());
+        // Run button
+        const runBtn = document.getElementById('run-btn') as HTMLButtonElement;
+        runBtn?.addEventListener('click', () => this.runCode());
 
         // Theme selector
         const themeSelect = document.getElementById('theme-select') as HTMLSelectElement;
@@ -454,21 +464,21 @@ class AnyCoder {
         // File upload handler
         const fileUpload = document.getElementById('file-upload') as HTMLInputElement;
         const fileUploadButton = document.getElementById('file-upload-button');
-        
+
         fileUpload?.addEventListener('change', (e) => this.handleFileUpload(e));
         fileUploadButton?.addEventListener('click', () => fileUpload?.click());
-        
+
         // Drag and drop functionality
         fileUploadButton?.addEventListener('dragover', (e) => {
             e.preventDefault();
             fileUploadButton.style.borderColor = 'var(--primary-color)';
         });
-        
+
         fileUploadButton?.addEventListener('dragleave', (e) => {
             e.preventDefault();
             fileUploadButton.style.borderColor = 'var(--border)';
         });
-        
+
         fileUploadButton?.addEventListener('drop', (e) => {
             e.preventDefault();
             fileUploadButton.style.borderColor = 'var(--border)';
@@ -485,6 +495,35 @@ class AnyCoder {
             if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
                 e.preventDefault();
                 this.handleGenerate();
+            }
+        });
+
+        // API key persistence handler
+        const apiKeyEl = document.getElementById('api-key') as HTMLInputElement;
+        apiKeyEl?.addEventListener('blur', () => {
+            this.saveApiKey(apiKeyEl.value);
+        });
+        apiKeyEl?.addEventListener('change', () => {
+            this.saveApiKey(apiKeyEl.value);
+        });
+
+        // Custom model toggle
+        const useCustomModelEl = document.getElementById('use-custom-model') as HTMLInputElement;
+        const customModelEl = document.getElementById('custom-model') as HTMLInputElement;
+        const modelEl = document.getElementById('model') as HTMLSelectElement;
+        const modelSearchEl = document.getElementById('model-search') as HTMLInputElement;
+
+        useCustomModelEl?.addEventListener('change', () => {
+            if (useCustomModelEl.checked) {
+                // Show custom input, hide dropdown
+                if (customModelEl) customModelEl.style.display = 'block';
+                if (modelEl) modelEl.style.display = 'none';
+                if (modelSearchEl) modelSearchEl.style.display = 'none';
+            } else {
+                // Show dropdown, hide custom input
+                if (customModelEl) customModelEl.style.display = 'none';
+                if (modelEl) modelEl.style.display = 'block';
+                if (modelSearchEl) modelSearchEl.style.display = 'block';
             }
         });
     }
@@ -539,7 +578,7 @@ class AnyCoder {
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : 'Unknown error';
             console.error('❌ Generation error:', errorMessage);
-            
+
             // Categorize errors and provide helpful feedback
             if (errorMessage.includes('API key') || errorMessage.includes('authentication')) {
                 this.showToast('Authentication failed. Please check your API key.', 'error');
@@ -558,7 +597,7 @@ class AnyCoder {
             } else {
                 this.showToast(`Generation failed: ${errorMessage}`, 'error');
             }
-            
+
             // Log detailed error for debugging
             if (error instanceof Error && error.stack) {
                 console.error('Error stack:', error.stack);
@@ -572,15 +611,28 @@ class AnyCoder {
         const promptEl = document.getElementById('prompt') as HTMLTextAreaElement;
         const languageEl = document.getElementById('language') as HTMLSelectElement;
         const modelEl = document.getElementById('model') as HTMLSelectElement;
+        const customModelEl = document.getElementById('custom-model') as HTMLInputElement;
+        const useCustomModelEl = document.getElementById('use-custom-model') as HTMLInputElement;
         const apiKeyEl = document.getElementById('api-key') as HTMLInputElement;
         const webSearchEl = document.getElementById('web-search') as HTMLInputElement;
         const fileUploadEl = document.getElementById('file-upload') as HTMLInputElement;
         const websiteUrlEl = document.getElementById('website-url') as HTMLInputElement;
 
+        // Determine which model to use
+        let model = 'claude-sonnet-4';
+        if (useCustomModelEl?.checked && customModelEl?.value.trim()) {
+            model = customModelEl.value.trim();
+        } else if (modelEl?.value) {
+            model = modelEl.value;
+        }
+
+        // Save the selected model for next time
+        this.saveModel(model, useCustomModelEl?.checked || false);
+
         return {
             prompt: promptEl?.value || '',
             language: languageEl?.value || 'html',
-            model: modelEl?.value || 'claude-sonnet-4',
+            model: model,
             apiKey: apiKeyEl?.value || undefined,
             webSearch: webSearchEl?.checked || false,
             referenceFile: fileUploadEl?.files?.[0] || undefined,
@@ -591,11 +643,11 @@ class AnyCoder {
     private async generateCode(config: GenerationConfig): Promise<AIResponse> {
         const maxRetries = 3;
         let lastError: Error | null = null;
-        
+
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
             try {
                 console.log(`🔄 Generation attempt ${attempt}/${maxRetries}`);
-                
+
                 // Enhanced prompt with context
                 let enhancedPrompt = this.buildEnhancedPrompt(config);
 
@@ -627,11 +679,11 @@ class AnyCoder {
 
                 // Use Poe with OpenAI-compatible API
                 const ai = await this.callPoe(enhancedPrompt, config.language, config.model, config.apiKey);
-                
+
                 // Validate AI response
                 const responseText = typeof ai.code === 'string' ? ai.code : JSON.stringify(ai.code);
                 const validation = this.validateAIResponse(responseText, config.language);
-                
+
                 // Log validation results
                 if (validation.warnings.length > 0) {
                     console.warn('⚠️ Response validation warnings:', validation.warnings);
@@ -639,10 +691,10 @@ class AnyCoder {
                         this.showToast(warning, 'warning');
                     });
                 }
-                
+
                 if (!validation.isValid) {
                     console.error('❌ Response validation failed:', validation.errors);
-                    
+
                     // If this is the last attempt, show errors to user
                     if (attempt === maxRetries) {
                         validation.errors.forEach(error => {
@@ -650,16 +702,16 @@ class AnyCoder {
                         });
                         throw new Error(`Response validation failed: ${validation.errors.join(', ')}`);
                     }
-                    
+
                     // Wait before retry with exponential backoff
                     const delay = Math.min(1000 * Math.pow(2, attempt - 1), 5000);
                     console.log(`⏳ Waiting ${delay}ms before retry...`);
                     await new Promise(resolve => setTimeout(resolve, delay));
                     continue;
                 }
-                
+
                 console.log('✅ Response validation passed');
-                
+
                 // Parse potential multi-file output
                 if (typeof ai.code === 'string') {
                     console.log('🔍 Checking for multi-file content in response:', ai.code.substring(0, 500) + '...');
@@ -672,22 +724,22 @@ class AnyCoder {
                     }
                 }
                 return ai;
-                
+
             } catch (error) {
                 lastError = error as Error;
                 console.error(`❌ Generation attempt ${attempt} failed:`, error);
-                
+
                 if (attempt === maxRetries) {
                     break;
                 }
-                
+
                 // Wait before retry with exponential backoff
                 const delay = Math.min(1000 * Math.pow(2, attempt - 1), 5000);
                 console.log(`⏳ Waiting ${delay}ms before retry...`);
                 await new Promise(resolve => setTimeout(resolve, delay));
             }
         }
-        
+
         // If we get here, all retries failed
         const errorMessage = lastError?.message || 'Unknown error occurred';
         this.showToast(`Code generation failed after ${maxRetries} attempts: ${errorMessage}`, 'error');
@@ -706,52 +758,49 @@ class AnyCoder {
 
     private buildSystemPrompt(language: string, hasContext: boolean): string {
         // Get language-specific prompt or fallback to generic
-        const languageSpecificPrompt = this.languagePrompts[language] || 
+        const languageSpecificPrompt = this.languagePrompts[language] ||
             `You are an expert ${language} code generator inside AnyCoder.`;
-        
+
         return [
             languageSpecificPrompt,
             '',
 
-            'OUTPUT CONTRACT:',
-            '- Output ONLY code. No explanations, no markdown, no backticks.',
-            '- If multiple files are needed, delimit each file with a header line exactly:',
-            '- // FILENAME: filename.ext',
-            '- The header must be on its own line, then the file content starts on the next line.',
-            '- Do not include any text outside files.',
+            '=== OUTPUT FORMAT (CRITICAL) ===',
+            'You MUST follow this exact format for ALL responses:',
+            '',
+            '1. Output ONLY raw code. NO explanations, NO markdown fences, NO prose.',
+            '2. For multi-file projects, use this EXACT delimiter format on its own line:',
+            '   // FILENAME: filename.ext',
+            '3. The delimiter must start at beginning of line with no leading spaces.',
+            '4. File content starts on the NEXT line after the delimiter.',
+            '',
 
-            hasContext
-                ? '- You are UPDATING an existing project. Keep file names and structure unless the user explicitly asks to change them. Return the full updated files.'
-                : '- You are CREATING a new project. Use sensible defaults.',
+            '=== EXAMPLE OUTPUT FORMAT ===',
+            '// FILENAME: index.html',
+            '<!DOCTYPE html><html>...</html>',
+            '// FILENAME: style.css',
+            'body { margin: 0; }',
+            '// FILENAME: script.js',
+            'console.log("Hello");',
+            '',
 
-            'WEB PROJECTS:',
-            '- HTML, CSS, and JavaScript must be in separate files.',
-            '- Never embed CSS in <style> or JS in <script> within HTML.',
-            '- For web app tasks, you must output EXACTLY THREE FILES and NO OTHERS:',
-            '- // FILENAME: index.html',
-            '- // FILENAME: style.css',
-            '- // FILENAME: script.js',
-            '- Do NOT create more than one .html, more than one .css, or more than one .js file.',
-            '- Do NOT output additional files, images, assets, or directories unless explicitly requested to add more files (which is not allowed by default).',
-            '- Default names are fixed: index.html, style.css, script.js. Do not rename them unless the user explicitly requests a rename.',
-            hasContext
-                ? '- When updating, keep these three filenames and modify their contents only.'
-                : '- When creating new, produce only these three files.',
-            '- HTML must include <!DOCTYPE html>, <meta charset="UTF-8">, and a responsive <meta name="viewport">.',
-            '- HTML must include <!DOCTYPE html>, <meta charset="UTF-8">, and a responsive <meta name="viewport">.',
+            '=== WEB PROJECT RULES ===',
+            '- Always output EXACTLY 3 files: index.html, style.css, script.js',
+            '- HTML must link CSS: <link rel="stylesheet" href="style.css">',
+            '- HTML must link JS: <script src="script.js"></script> before </body>',
+            '- NEVER embed <style> or <script> content inside HTML',
+            '- HTML needs: <!DOCTYPE html>, charset, viewport meta tags',
 
-            'NON-WEB PROJECTS:',
-            '- Default to a single file unless the user asks for multiple.',
-            '- Use sensible defaults: main.ts (TypeScript), index.js (JavaScript), main.py (Python), etc.',
+            '=== QUALITY ===',
+            '- Modern, production-ready code',
+            '- Semantic HTML5, CSS variables, ES6+ JavaScript',
+            '',
 
-            'QUALITY:',
-            '- Produce modern, production-ready, readable code.',
-            '- Minimize dependencies. No remote network calls or external CDNs unless the user requests them.',
-            '- Add small, meaningful comments only when essential to understand the code.',
-
-            'PARSING COMPATIBILITY:',
-            '- The parser detects files via lines that match /^\\s*\/\/\\s*FILENAME:\\s*(.+)$/i.',
-            '- Do not include markdown fences or extra headers.'
+            '=== DO NOT ===',
+            '- No markdown fences (```)',
+            '- No explanatory text',
+            '- No inline styles/scripts in HTML',
+            '- No extra files beyond 3 for web projects'
         ].filter(Boolean).join('\n');
     }
 
@@ -1118,7 +1167,7 @@ Please read our contributing guidelines before submitting PRs.
         // Try to extract code from markdown code blocks (any language tag or none)
         const codeBlockRegex = /```[\w]*\s*([\s\S]*?)```/i;
         const match = cleaned.match(codeBlockRegex);
-        
+
         if (match) {
             return match[1].trim();
         }
@@ -1154,9 +1203,9 @@ Please read our contributing guidelines before submitting PRs.
 
         // Generic fallback: find first line that looks like code
         const lines = cleaned.split('\n');
-        const codeStart = lines.findIndex(line => 
-            line.includes('<!DOCTYPE') || 
-            line.includes('<html') || 
+        const codeStart = lines.findIndex(line =>
+            line.includes('<!DOCTYPE') ||
+            line.includes('<html') ||
             line.includes('function') ||
             line.includes('class ') ||
             line.includes('interface ') ||
@@ -1243,7 +1292,7 @@ Please read our contributing guidelines before submitting PRs.
         } catch (err) {
             const errorMessage = err instanceof Error ? err.message : 'Unknown file processing error';
             console.error('❌ File processing failed:', errorMessage);
-            
+
             // Provide specific error feedback based on error type
             if (errorMessage.includes('timeout') || errorMessage.includes('abort')) {
                 this.showToast('File processing timed out. Try a smaller file.', 'error');
@@ -1260,7 +1309,7 @@ Please read our contributing guidelines before submitting PRs.
             } else {
                 this.showToast(`Failed to process file: ${errorMessage}`, 'error');
             }
-            
+
             // Enhanced fallback strategy with timeout and better error handling
             if (file.size < 5 * 1024 * 1024 && !isImage && !isPdf) { // Only try text fallback for small non-binary files
                 console.log('🔄 Attempting text fallback for small file...');
@@ -1271,7 +1320,7 @@ Please read our contributing guidelines before submitting PRs.
                             reader.abort();
                             reject(new Error('Fallback reading timeout'));
                         }, 15000); // 15 second timeout for fallback
-                        
+
                         reader.onload = () => {
                             clearTimeout(timeout);
                             const content = reader.result as string;
@@ -1283,12 +1332,12 @@ Please read our contributing guidelines before submitting PRs.
                                 reject(new Error('Fallback produced empty content'));
                             }
                         };
-                        
+
                         reader.onerror = () => {
                             clearTimeout(timeout);
                             reject(new Error(`Fallback reading failed: ${reader.error?.message || 'Unknown error'}`));
                         };
-                        
+
                         reader.readAsText(file);
                     });
                 } catch (fallbackError) {
@@ -1311,11 +1360,11 @@ Please read our contributing guidelines before submitting PRs.
         }
 
         console.log(`🌐 Fetching website content from: ${url}`);
-        
+
         // Create AbortController for timeout management
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
-        
+
         try {
             // Try server endpoint first (dev middleware or production function if provided)
             try {
@@ -1326,7 +1375,7 @@ Please read our contributing guidelines before submitting PRs.
                         'Content-Type': 'application/json'
                     }
                 });
-                
+
                 if (response.ok) {
                     const content = await response.text();
                     if (content && content.trim()) {
@@ -1339,7 +1388,7 @@ Please read our contributing guidelines before submitting PRs.
                 } else {
                     const errorText = await response.text().catch(() => response.statusText);
                     console.warn(`❌ Primary scrape endpoint failed: ${response.status} ${errorText}`);
-                    
+
                     if (response.status === 429) {
                         this.showToast('Rate limit exceeded. Trying fallback method...', 'warning');
                     } else if (response.status >= 500) {
@@ -1357,7 +1406,7 @@ Please read our contributing guidelines before submitting PRs.
             // Fallback: use a read-only, CORS-friendly proxy that returns extracted page text
             console.log('🔄 Attempting fallback scrape method...');
             const fallbackUrl = `https://r.jina.ai/${url}`;
-            
+
             const fallbackResp = await fetch(fallbackUrl, {
                 signal: controller.signal,
                 headers: {
@@ -1365,11 +1414,11 @@ Please read our contributing guidelines before submitting PRs.
                     'Accept': 'text/plain, text/html, */*'
                 }
             });
-            
+
             if (!fallbackResp.ok) {
                 const errText = await fallbackResp.text().catch(() => fallbackResp.statusText);
                 const errorMsg = `Fallback fetch failed: ${fallbackResp.status} ${errText}`;
-                
+
                 if (fallbackResp.status === 403) {
                     this.showToast('Website blocked access. Try a different URL.', 'error');
                 } else if (fallbackResp.status === 404) {
@@ -1379,28 +1428,28 @@ Please read our contributing guidelines before submitting PRs.
                 } else {
                     this.showToast(`Failed to fetch website: ${fallbackResp.status}`, 'error');
                 }
-                
+
                 throw new Error(errorMsg);
             }
-            
+
             const content = await fallbackResp.text();
             if (!content || !content.trim()) {
                 const error = new Error('Website returned empty content');
                 this.showToast('Website content is empty or unavailable', 'error');
                 throw error;
             }
-            
+
             console.log('✅ Fallback scrape method successful');
             this.showToast('Website content fetched using fallback method', 'success');
             return content;
-            
+
         } catch (error) {
             if (error instanceof Error && error.name === 'AbortError') {
                 const timeoutError = new Error('Website fetch timed out after 30 seconds');
                 this.showToast('Website fetch timed out. Try again or use a different URL.', 'error');
                 throw timeoutError;
             }
-            
+
             // Re-throw with enhanced error context
             const enhancedError = new Error(`Failed to fetch website content: ${error instanceof Error ? error.message : 'Unknown error'}`);
             console.error('❌ All website fetching methods failed:', enhancedError.message);
@@ -1420,7 +1469,7 @@ Please read our contributing guidelines before submitting PRs.
         if (codeElement) {
             codeElement.textContent = code;
             codeElement.className = `hljs language-${language}`;
-            
+
             // Apply syntax highlighting
             if (window.hljs) {
                 window.hljs.highlightElement(codeElement);
@@ -1436,7 +1485,7 @@ Please read our contributing guidelines before submitting PRs.
         if (fileViews) {
             fileViews.innerHTML = `<pre><code id="generated-code" class="hljs language-${language}"></code></pre>`;
             const codeElement = document.getElementById('generated-code');
-                if (codeElement) {
+            if (codeElement) {
                 codeElement.textContent = code;
                 if (window.hljs) {
                     window.hljs.highlightElement(codeElement);
@@ -1452,13 +1501,13 @@ Please read our contributing guidelines before submitting PRs.
 
         // Build tabs and views
         const filenames = Object.keys(files);
-        fileTabs.innerHTML = filenames.map((name, idx) => `<button class="file-tab ${idx===0?'active':''}" data-file="${this.escapeHtml(name)}">${this.escapeHtml(name)}</button>`).join('');
+        fileTabs.innerHTML = filenames.map((name, idx) => `<button class="file-tab ${idx === 0 ? 'active' : ''}" data-file="${this.escapeHtml(name)}">${this.escapeHtml(name)}</button>`).join('');
         fileTabs.style.display = 'flex';
 
         fileViews.innerHTML = filenames.map((name, idx) => {
             const language = this.getLanguageFromFilename(name);
             return `
-            <div class="file-view ${idx===0?'active':''}" data-file="${this.escapeHtml(name)}">
+            <div class="file-view ${idx === 0 ? 'active' : ''}" data-file="${this.escapeHtml(name)}">
                 <pre><code class="hljs language-${language}">${this.escapeHtml(files[name])}</code></pre>
             </div>
         `;
@@ -1489,7 +1538,7 @@ Please read our contributing guidelines before submitting PRs.
         const ext = filename.toLowerCase().split('.').pop();
         const extMap: Record<string, string> = {
             'html': 'html',
-            'htm': 'html', 
+            'htm': 'html',
             'css': 'css',
             'js': 'javascript',
             'mjs': 'javascript',
@@ -1510,7 +1559,7 @@ Please read our contributing guidelines before submitting PRs.
             // Clear existing content and show streaming started
             codeElement.innerHTML = '<span class="streaming-cursor">█</span>';
             codeElement.className = `hljs language-${language}`;
-            
+
             // Switch to code tab to show streaming
             this.switchTab('code');
         }
@@ -1523,9 +1572,9 @@ Please read our contributing guidelines before submitting PRs.
             const escapedContent = this.escapeHtml(content);
             codeElement.innerHTML = escapedContent + '<span class="streaming-cursor">█</span>';
             codeElement.className = `hljs language-${language}`;
-            
-        // Apply syntax highlighting with a small delay to avoid too frequent updates
-        if (window.hljs) {
+
+            // Apply syntax highlighting with a small delay to avoid too frequent updates
+            if (window.hljs) {
                 // Debounce highlighting updates
                 clearTimeout(this.highlightTimeout);
                 this.highlightTimeout = setTimeout(() => {
@@ -1535,19 +1584,19 @@ Please read our contributing guidelines before submitting PRs.
                     if (cursorElement) {
                         cursorElement.remove();
                     }
-                    
-            window.hljs.highlightElement(codeElement);
-                    
+
+                    window.hljs.highlightElement(codeElement);
+
                     // Add cursor back
                     if (cursor) {
                         codeElement.innerHTML += cursor;
                     }
                 }, 200);
             }
-            
+
             // Auto-scroll to bottom if content is long
             codeElement.scrollTop = codeElement.scrollHeight;
-            
+
             // For HTML content, update live preview during streaming (debounced)
             if (language === 'html' && content.includes('</html>')) {
                 clearTimeout(this.previewTimeout);
@@ -1575,7 +1624,7 @@ Please read our contributing guidelines before submitting PRs.
             // Show HTML preview
             previewPlaceholder.style.display = 'none';
             previewFrame.style.display = 'block';
-            
+
             const blob = new Blob([code], { type: 'text/html' });
             const url = URL.createObjectURL(blob);
             this.blobUrls.push(url); // Track for cleanup
@@ -1605,35 +1654,43 @@ Please read our contributing guidelines before submitting PRs.
 
     private injectAssetsIntoHtml(html: string, files: Record<string, string>): string {
         let enhancedHtml = html;
-        
+
+        // Remove existing link/script references that point to our files (to avoid duplicates)
+        enhancedHtml = enhancedHtml.replace(/<link[^>]*href=["']style\.css["'][^>]*>/gi, '');
+        enhancedHtml = enhancedHtml.replace(/<script[^>]*src=["']script\.js["'][^>]*><\/script>/gi, '');
+
         // Find CSS files and inject them as <style> tags
         const cssFiles = Object.keys(files).filter(f => f.toLowerCase().endsWith('.css'));
         if (cssFiles.length > 0) {
-            const cssContent = cssFiles.map(f => files[f]).join('\n\n');
+            const cssContent = cssFiles.map(f => `/* === ${f} === */\n${files[f]}`).join('\n\n');
             const styleTag = `<style>\n${cssContent}\n</style>`;
-            
-            // Try to inject before </head>, fallback to beginning of <body>
-            if (enhancedHtml.includes('</head>')) {
-                enhancedHtml = enhancedHtml.replace('</head>', `${styleTag}\n</head>`);
-            } else if (enhancedHtml.includes('<body>')) {
-                enhancedHtml = enhancedHtml.replace('<body>', `<body>\n${styleTag}`);
+
+            // Try to inject before </head> (case-insensitive), fallback to beginning of <body>
+            if (/<\/head>/i.test(enhancedHtml)) {
+                enhancedHtml = enhancedHtml.replace(/<\/head>/i, `${styleTag}\n</head>`);
+            } else if (/<body[^>]*>/i.test(enhancedHtml)) {
+                enhancedHtml = enhancedHtml.replace(/<body([^>]*)>/i, `<body$1>\n${styleTag}`);
             } else {
                 enhancedHtml = styleTag + '\n' + enhancedHtml;
             }
+            console.log(`✅ Injected ${cssFiles.length} CSS file(s): ${cssFiles.join(', ')}`);
         }
 
         // Find JS files and inject them as <script> tags
         const jsFiles = Object.keys(files).filter(f => f.toLowerCase().endsWith('.js'));
         if (jsFiles.length > 0) {
-            const jsContent = jsFiles.map(f => files[f]).join('\n\n');
+            const jsContent = jsFiles.map(f => `// === ${f} ===\n${files[f]}`).join('\n\n');
             const scriptTag = `<script>\n${jsContent}\n</script>`;
-            
-            // Try to inject before </body>, fallback to end
-            if (enhancedHtml.includes('</body>')) {
-                enhancedHtml = enhancedHtml.replace('</body>', `${scriptTag}\n</body>`);
+
+            // Try to inject before </body> (case-insensitive), fallback to end
+            if (/<\/body>/i.test(enhancedHtml)) {
+                enhancedHtml = enhancedHtml.replace(/<\/body>/i, `${scriptTag}\n</body>`);
+            } else if (/<\/html>/i.test(enhancedHtml)) {
+                enhancedHtml = enhancedHtml.replace(/<\/html>/i, `${scriptTag}\n</html>`);
             } else {
                 enhancedHtml = enhancedHtml + '\n' + scriptTag;
             }
+            console.log(`✅ Injected ${jsFiles.length} JS file(s): ${jsFiles.join(', ')}`);
         }
 
         return enhancedHtml;
@@ -1643,7 +1700,7 @@ Please read our contributing guidelines before submitting PRs.
     private parseMultiFile(raw: string): Record<string, string> | null {
         console.log('🔍 Parsing multi-file content. Raw length:', raw.length);
         console.log('📄 First 200 chars:', raw.substring(0, 200));
-        
+
         const lines = raw.split(/\r?\n/);
         const fileInfos: FileInfo[] = [];
         let current: string | null = null;
@@ -1665,7 +1722,7 @@ Please read our contributing guidelines before submitting PRs.
                 // More conservative trimming - only remove leading/trailing empty lines
                 const content = buffer.join('\n');
                 const trimmed = content.replace(/^\n+/, '').replace(/\n+$/, '');
-                
+
                 if (trimmed.trim()) { // Only add non-empty files
                     fileInfos.push({
                         filename: current,
@@ -1680,11 +1737,19 @@ Please read our contributing guidelines before submitting PRs.
 
         for (const line of lines) {
             let matched = false;
-            
+
             // Try each delimiter pattern
             for (const pattern of delimiterPatterns) {
                 const match = line.match(pattern);
                 if (match) {
+                    // Before flushing, check if buffer has HTML content without a filename
+                    if (current === null && buffer.length > 0) {
+                        const bufferContent = buffer.join('\n');
+                        if (/<!DOCTYPE\s+html|<html/i.test(bufferContent)) {
+                            current = 'index.html';
+                            console.log('🔧 Auto-detected orphaned HTML content, assigning to index.html');
+                        }
+                    }
                     flush();
                     current = FileManager.sanitizeFilename(match[1].trim());
                     console.log(`🏷️ New file detected: ${current}`);
@@ -1692,9 +1757,18 @@ Please read our contributing guidelines before submitting PRs.
                     break;
                 }
             }
-            
+
             if (!matched) {
                 buffer.push(line);
+            }
+        }
+
+        // Final flush - also check for orphaned HTML
+        if (current === null && buffer.length > 0) {
+            const bufferContent = buffer.join('\n');
+            if (/<!DOCTYPE\s+html|<html/i.test(bufferContent)) {
+                current = 'index.html';
+                console.log('🔧 Auto-detected orphaned HTML content at end, assigning to index.html');
             }
         }
         flush();
@@ -1707,7 +1781,7 @@ Please read our contributing guidelines before submitting PRs.
         // Validate and merge duplicate files
         const validatedFiles = fileInfos.map(file => FileManager.validateFile(file));
         const mergedFiles = FileManager.mergeDuplicateFiles(validatedFiles);
-        
+
         // Log validation warnings
         mergedFiles.forEach(file => {
             if (file.errors && file.errors.length > 0) {
@@ -1750,7 +1824,7 @@ Please read our contributing guidelines before submitting PRs.
         };
 
         this.history.unshift(historyItem);
-        
+
         // Keep only last 50 items
         if (this.history.length > 50) {
             this.history = this.history.slice(0, 50);
@@ -1841,28 +1915,28 @@ Please read our contributing guidelines before submitting PRs.
         }
         if (websiteUrlEl) websiteUrlEl.value = '';
 
-    // Reset state
-    this.currentCodeContext = '';
-    this.currentFiles = null;
-    this.setHasContext(false);
+        // Reset state
+        this.currentCodeContext = '';
+        this.currentFiles = null;
+        this.setHasContext(false);
 
-    // Clear generated code
-    this.displaySingleFile('// Your generated code will appear here...', 'javascript');
-        
+        // Clear generated code
+        this.displaySingleFile('// Your generated code will appear here...', 'javascript');
+
         // Clear preview
         const previewFrame = document.getElementById('preview-frame') as HTMLIFrameElement;
         const previewPlaceholder = document.getElementById('preview-placeholder');
-        
+
         if (previewFrame && previewPlaceholder) {
             previewFrame.style.display = 'none';
             previewPlaceholder.style.display = 'flex';
         }
 
-    // Clear output console
-    const output = document.getElementById('output-console');
-    if (output) output.textContent = '';
+        // Clear output console
+        const output = document.getElementById('output-console');
+        if (output) output.textContent = '';
 
-    this.showToast('Cleared successfully', 'success');
+        this.showToast('Cleared successfully', 'success');
     }
 
     private async copyCode(): Promise<void> {
@@ -1880,37 +1954,37 @@ Please read our contributing guidelines before submitting PRs.
     private async downloadCode(): Promise<void> {
         const codeElement = document.getElementById('generated-code');
         const languageEl = document.getElementById('language') as HTMLSelectElement;
-        
+
         if (this.currentFiles) {
             // Enhanced multi-file download with project structure analysis
             try {
                 console.log('📁 Analyzing project structure for download...');
-                
+
                 // Convert files to FileInfo format for analysis
                 const fileInfos: FileInfo[] = Object.entries(this.currentFiles).map(([name, content]) => ({
                     filename: name,
                     content,
                     size: content.length
                 }));
-                
+
                 // Analyze and organize project structure
                 const organizationResult = FileManager.organizeFiles(fileInfos);
                 const { structure: projectStructure, organizedFiles } = organizationResult;
-                
+
                 console.log('📊 Project analysis:', {
                     type: projectStructure.type,
                     mainFile: projectStructure.mainFile,
                     totalFiles: Object.values(organizedFiles).flat().length
                 });
-                
+
                 const JSZip = await import('jszip');
                 const zip = new JSZip.default();
-                
+
                 // Add files with organized folder structure
                 for (const [folder, files] of Object.entries(organizedFiles)) {
                     for (const fileInfo of files) {
                         const fullPath = folder === 'root' ? fileInfo.filename : `${folder}/${fileInfo.filename}`;
-                        
+
                         // Validate file content before adding to zip
                         const validation = FileManager.validateFile(fileInfo);
                         if (!validation.isValid && validation.errors) {
@@ -1919,22 +1993,22 @@ Please read our contributing guidelines before submitting PRs.
                                 this.showToast(`File validation: ${error}`, 'warning');
                             });
                         }
-                        
+
                         zip.file(fullPath, fileInfo.content);
                     }
                 }
-                
+
                 // Generate project name based on main file or project type
-                const projectName = projectStructure.mainFile 
-                    ? projectStructure.mainFile.replace(/\.[^/.]+$/, '') 
+                const projectName = projectStructure.mainFile
+                    ? projectStructure.mainFile.replace(/\.[^/.]+$/, '')
                     : `${projectStructure.type}-project`;
-                
-                const blob = await zip.generateAsync({ 
+
+                const blob = await zip.generateAsync({
                     type: 'blob',
                     compression: 'DEFLATE',
                     compressionOptions: { level: 6 }
                 });
-                
+
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url;
@@ -1943,14 +2017,14 @@ Please read our contributing guidelines before submitting PRs.
                 a.click();
                 document.body.removeChild(a);
                 URL.revokeObjectURL(url);
-                
+
                 this.showToast(`Downloaded ${projectName}.zip with organized structure`, 'success');
                 return;
-                
+
             } catch (e) {
                 console.error('❌ Enhanced zip creation failed:', e);
                 this.showToast('Enhanced zip failed, trying fallback...', 'warning');
-                
+
                 // Fallback to simple zip creation
                 try {
                     const JSZip = await import('jszip');
@@ -1972,7 +2046,7 @@ Please read our contributing guidelines before submitting PRs.
                 } catch (fallbackError) {
                     console.error('❌ Fallback zip creation also failed:', fallbackError);
                     this.showToast('Failed to create zip file', 'error');
-                    
+
                     // Final fallback: download individual files
                     this.showToast('Attempting individual file downloads...', 'warning');
                     for (const [name, content] of Object.entries(this.currentFiles)) {
@@ -1999,14 +2073,14 @@ Please read our contributing guidelines before submitting PRs.
         if (codeElement && languageEl) {
             const code = codeElement.textContent || '';
             const language = languageEl.value;
-            
+
             // Validate single file content
             const fileInfo: FileInfo = {
                 filename: `generated-code.${this.getFileExtension(language)}`,
                 content: code,
                 language: language
             };
-            
+
             const validation = FileManager.validateFile(fileInfo);
             if (!validation.isValid && validation.errors) {
                 console.warn('⚠️ Single file validation errors:', validation.errors);
@@ -2014,11 +2088,11 @@ Please read our contributing guidelines before submitting PRs.
                     this.showToast(`File validation: ${error}`, 'warning');
                 });
             }
-            
+
             const filename = FileManager.sanitizeFilename(fileInfo.filename);
             const blob = new Blob([code], { type: 'text/plain' });
             const url = URL.createObjectURL(blob);
-            
+
             const a = document.createElement('a');
             a.href = url;
             a.download = filename;
@@ -2026,11 +2100,11 @@ Please read our contributing guidelines before submitting PRs.
             a.click();
             document.body.removeChild(a);
             URL.revokeObjectURL(url);
-            
+
             this.showToast(`Downloaded ${filename}`, 'success');
         }
     }
-    
+
     private getFileExtension(language: string): string {
         const extensions: Record<string, string> = {
             'html': 'html',
@@ -2050,7 +2124,7 @@ Please read our contributing guidelines before submitting PRs.
         if (link) {
             link.href = `https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/${theme}.min.css`;
         }
-        
+
         // Re-highlight code with new theme
         this.updateCodeHighlighting();
         localStorage.setItem('anycoder-theme', theme);
@@ -2070,6 +2144,61 @@ Please read our contributing guidelines before submitting PRs.
             if (themeSelect) {
                 themeSelect.value = savedTheme;
                 this.changeTheme(savedTheme);
+            }
+        }
+    }
+
+    private loadApiKey(): void {
+        const savedApiKey = localStorage.getItem('anycoder-api-key');
+        if (savedApiKey) {
+            const apiKeyEl = document.getElementById('api-key') as HTMLInputElement;
+            if (apiKeyEl) {
+                apiKeyEl.value = savedApiKey;
+            }
+        }
+    }
+
+    private saveApiKey(apiKey: string): void {
+        if (apiKey && apiKey.trim()) {
+            localStorage.setItem('anycoder-api-key', apiKey.trim());
+        } else {
+            localStorage.removeItem('anycoder-api-key');
+        }
+    }
+
+    private saveModel(model: string, isCustom: boolean): void {
+        localStorage.setItem('anycoder-model', model);
+        localStorage.setItem('anycoder-model-is-custom', isCustom ? 'true' : 'false');
+    }
+
+    private loadModel(): void {
+        const savedModel = localStorage.getItem('anycoder-model');
+        const isCustom = localStorage.getItem('anycoder-model-is-custom') === 'true';
+
+        const modelEl = document.getElementById('model') as HTMLSelectElement;
+        const customModelEl = document.getElementById('custom-model') as HTMLInputElement;
+        const useCustomModelEl = document.getElementById('use-custom-model') as HTMLInputElement;
+
+        if (savedModel) {
+            if (isCustom) {
+                // Set up custom model mode
+                if (useCustomModelEl) useCustomModelEl.checked = true;
+                if (customModelEl) {
+                    customModelEl.value = savedModel;
+                    customModelEl.style.display = 'block';
+                }
+                if (modelEl) modelEl.style.display = 'none';
+                const searchEl = document.getElementById('model-search') as HTMLInputElement;
+                if (searchEl) searchEl.style.display = 'none';
+            } else {
+                // Set the dropdown value (will be applied after models load)
+                if (modelEl) {
+                    // Check if option exists
+                    const optionExists = Array.from(modelEl.options).some(opt => opt.value === savedModel);
+                    if (optionExists) {
+                        modelEl.value = savedModel;
+                    }
+                }
             }
         }
     }
@@ -2107,7 +2236,7 @@ Please read our contributing guidelines before submitting PRs.
         const file = target.files?.[0];
         const fileUploadButton = document.getElementById('file-upload-button');
         const fileUploadText = fileUploadButton?.querySelector('.file-upload-text');
-        
+
         if (file && fileUploadButton && fileUploadText) {
             // Update button appearance
             fileUploadButton.classList.add('has-file');
@@ -2115,14 +2244,14 @@ Please read our contributing guidelines before submitting PRs.
                 <span>${file.name}</span>
                 <button class="file-remove-btn" title="Remove file">×</button>
             `;
-            
+
             // Add click handler to remove button
             const removeBtn = fileUploadText.querySelector('.file-remove-btn');
             removeBtn?.addEventListener('click', (e) => {
                 e.stopPropagation();
                 this.removeFile();
             });
-            
+
             this.showToast(`File selected: ${file.name}`, 'success');
         } else if (fileUploadButton && fileUploadText) {
             // Reset button appearance
@@ -2135,16 +2264,16 @@ Please read our contributing guidelines before submitting PRs.
         const fileUpload = document.getElementById('file-upload') as HTMLInputElement;
         const fileUploadButton = document.getElementById('file-upload-button');
         const fileUploadText = fileUploadButton?.querySelector('.file-upload-text');
-        
+
         if (fileUpload) {
             fileUpload.value = '';
         }
-        
+
         if (fileUploadButton && fileUploadText) {
             fileUploadButton.classList.remove('has-file');
             fileUploadText.textContent = 'Choose file or drag & drop';
         }
-        
+
         this.showToast('File removed', 'success');
     }
 
@@ -2173,7 +2302,7 @@ Please read our contributing guidelines before submitting PRs.
         if (toast) {
             toast.textContent = message;
             toast.className = `toast ${type} show`;
-            
+
             setTimeout(() => {
                 toast.classList.remove('show');
             }, 3000);
@@ -2313,8 +2442,8 @@ Please read our contributing guidelines before submitting PRs.
 
             const handler = (ev: MessageEvent) => {
                 if (ev.data && ev.data.type === 'anycoder-console') {
-                    const q = ev.data.data as Array<{t:string, v:string}>;
-                    q.forEach(item => this.appendOutput(item.v, item.t==='error'?'error':'log'));
+                    const q = ev.data.data as Array<{ t: string, v: string }>;
+                    q.forEach(item => this.appendOutput(item.v, item.t === 'error' ? 'error' : 'log'));
                     window.removeEventListener('message', handler);
                     document.body.removeChild(iframe);
                 }
@@ -2329,7 +2458,7 @@ Please read our contributing guidelines before submitting PRs.
     private async runPython(code: string) {
         if (!this.pyodideReady) {
             this.appendOutput('Initializing Python runtime, please wait...');
-            try { await this.initPyodide(); } catch {}
+            try { await this.initPyodide(); } catch { }
         }
         if (!this.pyodide) {
             this.appendOutput('Python runtime not available', 'error');
@@ -2346,7 +2475,7 @@ sys.stdout = StringIO()
 sys.stderr = StringIO()
 err_msg = None
 try:
-${code.split('\n').map(l=> '    '+l).join('\n')}
+${code.split('\n').map(l => '    ' + l).join('\n')}
 except Exception as e:
     err_msg = str(e)
 out = sys.stdout.getvalue()

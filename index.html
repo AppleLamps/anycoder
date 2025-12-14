@@ -1,15 +1,19 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AnyCoder TypeScript - AI Code Generator</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
     <link rel="stylesheet" href="styles.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+        rel="stylesheet">
 </head>
+
 <body>
     <a href="#main-content" class="skip-link">Skip to main content</a>
     <div class="container">
@@ -23,11 +27,7 @@
             <div class="form-section">
                 <div class="input-group">
                     <label for="prompt">What would you like to build?</label>
-                    <textarea 
-                        id="prompt" 
-                        placeholder="Describe your application..."
-                        rows="4"
-                    ></textarea>
+                    <textarea id="prompt" placeholder="Describe your application..." rows="4"></textarea>
                 </div>
 
                 <div class="input-group">
@@ -49,13 +49,21 @@
                     <select id="model" aria-label="Select AI model">
                         <option value="claude-sonnet-4">Loading models...</option>
                     </select>
+                    <div class="checkbox-group" style="margin-top: 0.5rem;">
+                        <input type="checkbox" id="use-custom-model">
+                        <label for="use-custom-model">Use custom model name</label>
+                    </div>
+                    <input type="text" id="custom-model" placeholder="Enter custom model name (e.g., gpt-4-turbo)"
+                        style="display: none; margin-top: 0.5rem;" aria-label="Custom model name">
                 </div>
 
                 <div class="input-group">
                     <label for="file-upload">Reference File (Optional)</label>
                     <div class="file-upload-wrapper">
-                        <input type="file" id="file-upload" accept=".txt,.md,.json,.js,.ts,.html,.css,.py,.pdf,.docx,.jpg,.jpeg,.png">
-                        <div class="file-upload-button" id="file-upload-button" role="button" tabindex="0" aria-label="Upload reference file">
+                        <input type="file" id="file-upload"
+                            accept=".txt,.md,.json,.js,.ts,.html,.css,.py,.pdf,.docx,.jpg,.jpeg,.png">
+                        <div class="file-upload-button" id="file-upload-button" role="button" tabindex="0"
+                            aria-label="Upload reference file">
                             <span class="file-upload-icon">📁</span>
                             <span class="file-upload-text">Choose file or drag & drop</span>
                         </div>
@@ -82,7 +90,8 @@
                             <label for="api-key">Poe API Key</label>
                             <input type="password" id="api-key" placeholder="Enter your Poe API key">
                             <small class="muted-small">
-                                Get your API key at <a href="https://poe.com/api_key" target="_blank" rel="noopener noreferrer" class="link-primary">poe.com/api_key</a>
+                                Get your API key at <a href="https://poe.com/api_key" target="_blank"
+                                    rel="noopener noreferrer" class="link-primary">poe.com/api_key</a>
                             </small>
                         </div>
                         <div class="checkbox-group">
@@ -96,9 +105,13 @@
             <div class="demo-section">
                 <h3>Quick Examples</h3>
                 <div class="demo-buttons">
-                    <button class="demo-btn" data-prompt="Create a todo app with add, delete, and mark complete functionality">Todo App</button>
-                    <button class="demo-btn" data-prompt="Build a calculator with basic arithmetic operations">Calculator</button>
-                    <button class="demo-btn" data-prompt="Create a responsive dashboard layout with sidebar navigation">Dashboard</button>
+                    <button class="demo-btn"
+                        data-prompt="Create a todo app with add, delete, and mark complete functionality">Todo
+                        App</button>
+                    <button class="demo-btn"
+                        data-prompt="Build a calculator with basic arithmetic operations">Calculator</button>
+                    <button class="demo-btn"
+                        data-prompt="Create a responsive dashboard layout with sidebar navigation">Dashboard</button>
                 </div>
             </div>
         </aside>
@@ -121,8 +134,8 @@
                             <button id="download-btn" class="btn btn-small">Download</button>
                             <button id="run-btn" class="btn btn-small">Run</button>
                             <select id="theme-select" title="Code theme selector">
+                                <option value="github" selected>Light Theme</option>
                                 <option value="github-dark">Dark Theme</option>
-                                <option value="github">Light Theme</option>
                                 <option value="monokai">Monokai</option>
                                 <option value="vs2015">VS2015</option>
                             </select>
@@ -141,7 +154,8 @@
                 <!-- Preview Tab -->
                 <div id="preview-tab" class="tab-panel">
                     <div class="preview-container">
-                        <iframe id="preview-frame" title="Live preview" sandbox="allow-scripts allow-same-origin"></iframe>
+                        <iframe id="preview-frame" title="Live preview"
+                            sandbox="allow-scripts allow-same-origin"></iframe>
                         <div id="preview-placeholder" class="preview-placeholder">
                             <p>Preview will appear here for HTML content</p>
                         </div>
@@ -175,4 +189,5 @@
     <script type="module" src="/index.ts"></script>
     <div aria-live="polite" aria-atomic="true" class="sr-only" id="aria-announcements"></div>
 </body>
+
 </html>

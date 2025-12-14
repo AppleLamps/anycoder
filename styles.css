@@ -6,21 +6,21 @@
 }
 
 :root {
-    --primary-color: #2563eb;
-    --primary-hover: #1d4ed8;
-    --secondary-color: #64748b;
-    --background: #0f172a;
-    --surface: #1e293b;
-    --surface-light: #334155;
-    --text: #f8fafc;
-    --text-muted: #94a3b8;
-    --border: #475569;
-    --accent: #06b6d4;
+    --primary-color: #000000;
+    --primary-hover: #1f2937;
+    --secondary-color: #586e75;
+    --background: #fdf6e4;
+    --surface: #fdf6e4;
+    --surface-light: #eee8d5;
+    --text: #002b36;
+    --text-muted: #657b83;
+    --border: #d3d0c2;
+    --accent: #000000;
     --success: #10b981;
     --warning: #f59e0b;
     --error: #ef4444;
     --radius: 8px;
-    --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+    --shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px -1px rgba(0, 0, 0, 0.06);
     --font-mono: 'JetBrains Mono', 'Consolas', 'Monaco', monospace;
     --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
@@ -168,7 +168,7 @@ body {
 .input-group textarea:focus {
     outline: none;
     border-color: var(--primary-color);
-    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+    box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.1);
 }
 
 .input-group textarea {
@@ -228,6 +228,12 @@ body {
 .btn-small {
     padding: 0.5rem 1rem;
     font-size: 0.75rem;
+    background: var(--primary-color);
+    color: white;
+}
+
+.btn-small:hover {
+    background: var(--primary-hover);
 }
 
 .settings-section {
@@ -403,7 +409,8 @@ body {
 .file-tabs {
     display: none;
     gap: 0.5rem;
-    padding: 0.75rem 1rem 0; /* top padding aligns with code */
+    padding: 0.75rem 1rem 0;
+    /* top padding aligns with code */
     background: var(--background);
     border-bottom: 1px solid var(--border);
 }
@@ -428,8 +435,14 @@ body {
     height: 100%;
 }
 
-.file-view { display: none; height: 100%; }
-.file-view.active { display: block; }
+.file-view {
+    display: none;
+    height: 100%;
+}
+
+.file-view.active {
+    display: block;
+}
 
 /* Output console */
 .output-container {
@@ -453,8 +466,16 @@ body {
 
 /* Streaming cursor animation */
 @keyframes blink {
-    0%, 50% { opacity: 1; }
-    51%, 100% { opacity: 0.3; }
+
+    0%,
+    50% {
+        opacity: 1;
+    }
+
+    51%,
+    100% {
+        opacity: 0.3;
+    }
 }
 
 .streaming-cursor {
@@ -570,7 +591,7 @@ body {
     .container {
         flex-direction: column;
     }
-    
+
     .sidebar {
         width: 100%;
         height: auto;
@@ -578,15 +599,15 @@ body {
         border-right: none;
         border-bottom: 1px solid var(--border);
     }
-    
+
     .main-content {
         height: 60vh;
     }
-    
+
     .button-group {
         flex-direction: column;
     }
-    
+
     .btn-primary {
         order: -1;
     }
@@ -636,7 +657,9 @@ body {
     display: block;
 }
 
-.link-primary { color: var(--primary-color); }
+.link-primary {
+    color: var(--primary-color);
+}
 
 /* Focus States */
 button:focus-visible,
@@ -696,7 +719,8 @@ textarea:focus-visible {
 
 /* Ensure sufficient color contrast */
 .text-muted {
-    color: #a0aec0; /* Improved from #94a3b8 for better contrast */
+    color: #a0aec0;
+    /* Improved from #94a3b8 for better contrast */
 }
 
 /* Add aria-live region styles */
