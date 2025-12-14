@@ -62,6 +62,9 @@ class AnyCoder {
     private cleanupHandlers: Array<() => void> = [];
     private blobUrls: string[] = [];
 
+    private modelsData: Array<{ id: string; metadata?: { display_name?: string }; owned_by?: string }> = [];
+    private modelsLoaded = false;
+
     // Language-specific system prompts for optimal AI performance
     private languagePrompts: Record<string, string> = {
         'typescript': `You are an expert TypeScript developer with deep knowledge of modern TypeScript patterns. Focus on:
@@ -133,6 +136,100 @@ class AnyCoder {
         this.loadTheme();
         this.loadHistory();
         this.initPyodide();
+        this.loadModels();
+    }
+
+    private async loadModels(): Promise<void> {
+        const modelSelect = document.getElementById('model') as HTMLSelectElement | null;
+        if (!modelSelect) {
+            return;
+        }
+
+        try {
+            const resp = await fetch('/api/models', { method: 'GET' });
+            if (!resp.ok) {
+                throw new Error(`Failed to load models: HTTP ${resp.status}`);
+            }
+
+            const data = await resp.json();
+            const models: any[] = Array.isArray(data?.data) ? data.data : [];
+
+            this.modelsData = models
+                .filter((m) => m && typeof m.id === 'string' && m.id.trim())
+                .map((m) => ({ id: String(m.id), metadata: m.metadata, owned_by: m.owned_by }));
+
+            this.modelsLoaded = true;
+            this.renderModelOptions('');
+        } catch (error) {
+            console.error('Failed to load models list:', error);
+            this.showToast('Failed to load model list. Using fallback.', 'warning');
+            this.modelsData = [
+                { id: 'claude-sonnet-4', metadata: { display_name: 'Claude-Sonnet-4' } },
+                { id: 'claude-opus-4.1', metadata: { display_name: 'Claude-Opus-4.1' } },
+                { id: 'gpt-5-pro', metadata: { display_name: 'GPT-5-Pro' } },
+                { id: 'gemini-2.5-pro', metadata: { display_name: 'Gemini-2.5-Pro' } },
+            ];
+            this.modelsLoaded = true;
+            this.renderModelOptions('');
+        }
+    }
+
+    private renderModelOptions(filterText: string): void {
+        const modelSelect = document.getElementById('model') as HTMLSelectElement | null;
+        if (!modelSelect) {
+            return;
+        }
+
+        const prevValue = modelSelect.value;
+        const q = (filterText || '').trim().toLowerCase();
+
+        const models = [...this.modelsData];
+        models.sort((a, b) => {
+            const aName = (a.metadata?.display_name || a.id).toLowerCase();
+            const bName = (b.metadata?.display_name || b.id).toLowerCase();
+            return aName.localeCompare(bName);
+        });
+
+        const filtered = q
+            ? models.filter((m) => {
+                  const id = m.id.toLowerCase();
+                  const name = (m.metadata?.display_name || '').toLowerCase();
+                  const owner = (m.owned_by || '').toLowerCase();
+                  return id.includes(q) || name.includes(q) || owner.includes(q);
+              })
+            : models;
+
+        modelSelect.innerHTML = '';
+
+        if (filtered.length === 0) {
+            const opt = document.createElement('option');
+            opt.value = '';
+            opt.textContent = 'No models found';
+            modelSelect.appendChild(opt);
+            return;
+        }
+
+        for (const m of filtered) {
+            const opt = document.createElement('option');
+            opt.value = m.id;
+            opt.textContent = m.metadata?.display_name || m.id;
+            modelSelect.appendChild(opt);
+        }
+
+        if (prevValue && filtered.some((m) => m.id === prevValue)) {
+            modelSelect.value = prevValue;
+            return;
+        }
+
+        const preferred = 'claude-sonnet-4';
+        if (filtered.some((m) => m.id === preferred)) {
+            modelSelect.value = preferred;
+            return;
+        }
+
+        if (filtered.length > 0) {
+            modelSelect.value = filtered[0].id;
+        }
     }
 
     private validateUrl(url: string): boolean {
@@ -301,6 +398,11 @@ class AnyCoder {
         // Main generation button
         const generateBtn = document.getElementById('generate-btn') as HTMLButtonElement;
         generateBtn?.addEventListener('click', () => this.handleGenerate());
+
+        const modelSearch = document.getElementById('model-search') as HTMLInputElement | null;
+        modelSearch?.addEventListener('input', () => {
+            this.renderModelOptions(modelSearch.value);
+        });
 
         // Clear button
         const clearBtn = document.getElementById('clear-btn') as HTMLButtonElement;
@@ -478,7 +580,7 @@ class AnyCoder {
         return {
             prompt: promptEl?.value || '',
             language: languageEl?.value || 'html',
-            model: modelEl?.value || 'Qwen/Qwen3-Coder-480B-A35B-Instruct',
+            model: modelEl?.value || 'claude-sonnet-4',
             apiKey: apiKeyEl?.value || undefined,
             webSearch: webSearchEl?.checked || false,
             referenceFile: fileUploadEl?.files?.[0] || undefined,
@@ -523,8 +625,8 @@ class AnyCoder {
                     }
                 }
 
-                // Use OpenRouter with OpenAI-compatible API
-                const ai = await this.callOpenRouter(enhancedPrompt, config.language, config.model, config.apiKey);
+                // Use Poe with OpenAI-compatible API
+                const ai = await this.callPoe(enhancedPrompt, config.language, config.model, config.apiKey);
                 
                 // Validate AI response
                 const responseText = typeof ai.code === 'string' ? ai.code : JSON.stringify(ai.code);
@@ -653,15 +755,15 @@ class AnyCoder {
         ].filter(Boolean).join('\n');
     }
 
-    private async callOpenRouter(
+    private async callPoe(
         prompt: string,
         language: string,
         model: string,
         apiKey?: string,
         retries: number = 3
     ): Promise<AIResponse> {
-        console.log('🚀 Starting OpenRouter API call...');
-        console.log('📡 Using proxy endpoint: /api-proxy/api/v1/chat/completions');
+        console.log('🚀 Starting Poe API call...');
+        console.log('📡 Using proxy endpoint: /api/chat');
         console.log('🔑 API Key provided:', !!apiKey);
         console.log('🤖 Model:', model);
 
@@ -670,10 +772,10 @@ class AnyCoder {
         };
 
         if (apiKey && apiKey.trim()) {
-            headers['Authorization'] = `Bearer ${apiKey.trim()}`;
-            console.log('✅ Authorization header added');
+            headers['x-poe-api-key'] = apiKey.trim();
+            console.log('✅ Poe API key header added');
         } else {
-            console.log('⚠️ No API key provided - using free tier');
+            console.log('⚠️ No API key provided');
         }
 
         let lastError: Error | null = null;
@@ -685,7 +787,7 @@ class AnyCoder {
                 const controller = new AbortController();
                 const timeoutId = setTimeout(() => controller.abort(), 30000);
 
-                const response = await fetch('/api-proxy/api/v1/chat/completions', {
+                const response = await fetch('/api/chat', {
                     method: 'POST',
                     headers,
                     signal: controller.signal,
@@ -723,7 +825,7 @@ class AnyCoder {
                 }
 
                 if (response.status === 401 || response.status === 403) {
-                    throw new Error('Authentication failed. Please add your OpenRouter API key in API Settings.');
+                    throw new Error('Authentication failed. Please add your Poe API key in API Settings.');
                 }
 
                 lastError = new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -1006,16 +1108,52 @@ Please read our contributing guidelines before submitting PRs.
     }
 
     private extractCodeFromResponse(text: string, language: string): string {
-        // Try to extract code from markdown code blocks
-        const codeBlockRegex = new RegExp(`\`\`\`${language}?\\s*([\\s\\S]*?)\`\`\``, 'i');
-        const match = text.match(codeBlockRegex);
+        // Strip common "thinking" / reasoning blocks that some models emit
+        let cleaned = text
+            .replace(/^Thinking\.\.\.[\s\S]*?(?=\n\n)/i, '')
+            .replace(/<think>[\s\S]*?<\/think>/gi, '')
+            .replace(/^>.*\n?/gm, '') // blockquote-style reasoning lines
+            .trim();
+
+        // Try to extract code from markdown code blocks (any language tag or none)
+        const codeBlockRegex = /```[\w]*\s*([\s\S]*?)```/i;
+        const match = cleaned.match(codeBlockRegex);
         
         if (match) {
             return match[1].trim();
         }
 
-        // Fallback: return the raw text, removing any leading/trailing explanations
-        const lines = text.split('\n');
+        // Language-specific start patterns to find where actual code begins
+        const lang = language.toLowerCase();
+        const codeStartPatterns: Record<string, RegExp> = {
+            html: /<!doctype\s+html|<html/i,
+            javascript: /^(import\s|export\s|const\s|let\s|var\s|function\s|class\s|\/\/|\/\*|\(function)/m,
+            typescript: /^(import\s|export\s|const\s|let\s|var\s|function\s|class\s|interface\s|type\s|enum\s|\/\/|\/\*)/m,
+            python: /^(import\s|from\s|def\s|class\s|#|if\s__name__|@)/m,
+            css: /^(\.|#|@|[a-z]+\s*\{|:root|html|body|\*)/im,
+            json: /^\s*[\[{]/m,
+            sql: /^(SELECT|INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|WITH|--|\/\*)/im,
+            java: /^(package\s|import\s|public\s|private\s|protected\s|class\s|interface\s|@|\/\/|\/\*)/m,
+            csharp: /^(using\s|namespace\s|public\s|private\s|protected\s|class\s|interface\s|\/\/|\/\*|\[)/m,
+            php: /^(<\?php|\$|namespace\s|use\s|class\s|function\s|\/\/|\/\*|#)/m,
+            ruby: /^(require\s|class\s|module\s|def\s|#|attr_)/m,
+            go: /^(package\s|import\s|func\s|type\s|var\s|const\s|\/\/|\/\*)/m,
+            rust: /^(use\s|mod\s|fn\s|struct\s|impl\s|enum\s|pub\s|\/\/|\/\*|#\[)/m,
+            swift: /^(import\s|class\s|struct\s|func\s|var\s|let\s|enum\s|protocol\s|\/\/|\/\*|@)/m,
+            kotlin: /^(package\s|import\s|fun\s|class\s|interface\s|val\s|var\s|object\s|\/\/|\/\*|@)/m,
+            markdown: /^(#|>|\*|-|\d+\.|```|\[)/m,
+        };
+
+        const pattern = codeStartPatterns[lang];
+        if (pattern) {
+            const startMatch = cleaned.search(pattern);
+            if (startMatch >= 0) {
+                return cleaned.slice(startMatch).trim();
+            }
+        }
+
+        // Generic fallback: find first line that looks like code
+        const lines = cleaned.split('\n');
         const codeStart = lines.findIndex(line => 
             line.includes('<!DOCTYPE') || 
             line.includes('<html') || 
@@ -1025,14 +1163,15 @@ Please read our contributing guidelines before submitting PRs.
             line.includes('def ') ||
             line.includes('import ') ||
             line.includes('{') ||
-            line.trim().startsWith('//')
+            line.trim().startsWith('//') ||
+            line.trim().startsWith('#')
         );
 
         if (codeStart >= 0) {
             return lines.slice(codeStart).join('\n').trim();
         }
 
-        return text.trim();
+        return cleaned;
     }
 
     private async readFileContent(file: File): Promise<string> {

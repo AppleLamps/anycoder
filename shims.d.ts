@@ -13,6 +13,16 @@ declare module 'jszip' {
   export default JSZip;
 }
 
+declare module 'pdfjs-dist' {
+  const pdfjsDist: any;
+  export = pdfjsDist;
+}
+
+declare module 'tesseract.js' {
+  const Tesseract: any;
+  export default Tesseract;
+}
+
 declare module 'pyodide' {
   export const loadPyodide: (opts?: any) => Promise<any>;
   const _default: any;

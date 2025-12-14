@@ -21,7 +21,7 @@ A powerful browser-based AI code generator with advanced document processing, OC
 ### Prerequisites
 - Node.js 16+ and npm
 - Modern web browser
-- OpenRouter API key (get one at [openrouter.ai/keys](https://openrouter.ai/keys))
+- Poe API key (get one at [poe.com/api_key](https://poe.com/api_key))
 
 ### Installation
 
@@ -58,7 +58,7 @@ npm start
 ## 🔧 Configuration
 
 ### API Setup
-1. Get your API key from [OpenRouter](https://openrouter.ai/keys)
+1. Get your API key from [Poe](https://poe.com/api_key)
 2. Enter it in the "API Settings" section in the UI
 3. Choose from available AI models (free and premium options)
 
@@ -130,7 +130,7 @@ After generating code, modify it by:
 
 **Document Intelligence**: Combines PDF/DOCX parsing with OCR to extract and analyze content from various document types.
 
-## � Deployment
+## 🚀 Deployment
 
 ### Vercel (Recommended)
 ```bash
@@ -171,16 +171,10 @@ Add new models to the model selector by modifying the options in `index.html`:
 ```
 
 ### Proxy Configuration
-The Vite config includes OpenRouter proxy setup for CORS handling:
+The Vite config includes a Poe proxy setup for CORS handling:
 ```typescript
 server: {
-  proxy: {
-    '/api-proxy': {
-      target: 'https://openrouter.ai',
-      changeOrigin: true,
-      rewrite: (path) => path.replace(/^\/api-proxy/, '')
-    }
-  }
+  // see vite.config.ts for /api/chat dev middleware
 }
 ```
 
